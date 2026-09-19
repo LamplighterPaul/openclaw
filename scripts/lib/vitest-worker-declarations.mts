@@ -15,6 +15,8 @@ export const runtimeProcessDeclarationEntries = {
     "extensions/memory-core/src/memory/manager-search-knn-entrypoint.ts",
 };
 export const vitestWorkerDeclarationEntries = {
+  "worker/native-worker-entrypoints.test-support":
+    "src/worker/native-worker-entrypoints.test-support.ts",
   ...runtimeProcessDeclarationEntries,
   "extensions/memory-core/manager-publication-fault-entrypoint.test-support":
     "extensions/memory-core/src/memory/manager-publication-fault-entrypoint.test-support.ts",

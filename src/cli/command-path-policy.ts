@@ -11,7 +11,6 @@ import { resolveGatewayCatalogCommandPath } from "./gateway-run-argv.js";
 import { resolveCliParentCommandPath } from "./parent-command-path.js";
 
 const DEFAULT_CLI_COMMAND_PATH_POLICY: CliCommandPathPolicy = {
-  loadDotEnv: true,
   configGuard: "run",
   stateStoreGuard: "skip",
   loadPlugins: "never",

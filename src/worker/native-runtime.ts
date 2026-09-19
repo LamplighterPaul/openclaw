@@ -11,69 +11,19 @@ import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
 import { isCredentialFieldName } from "@openclaw/ai/internal/shared";
 import { registerBuiltInApiProviders } from "@openclaw/ai/providers";
 import { z } from "zod";
-import { ThinkingSchema } from "./loop-contract.js";
-import { BindingSchema, type TurnBinding } from "./protocol.js";
+import { isPathInside } from "../infra/path-guards.js";
+import {
+  NativeRuntimeConfigSchema,
+  NativeRuntimeIdentifier as id,
+  type NativeRuntimeConfig,
+} from "./native-runtime-config.js";
+const provider = id.refine((value) => !value.includes("/"));
+const BindingSchema = z.object({ workspaceId: id, workspacePath: z.string().optional() });
 
-const id = z.string().trim().min(1).max(256);
-const provider = id.refine((value) => !value.includes("/"), "Provider must not contain /");
-const baseUrl = z
-  .string()
-  .url()
-  .refine((value) => {
-    const url = new URL(value);
-    return (
-      ["http:", "https:"].includes(url.protocol) &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      !/[{}]/.test(value)
-    );
-  }, "Expected an explicit HTTP(S) endpoint without credentials, query, or placeholders");
-
-/** Trusted local startup configuration, never a turn-wire configuration surface. */
-export const NativeRuntimeConfigSchema = z.strictObject({
-  models: z
-    .array(
-      z.strictObject({
-        provider,
-        id,
-        api: id,
-        baseUrl,
-        name: id.optional(),
-        contextWindow: z.number().int().positive(),
-        maxTokens: z.number().int().positive(),
-        reasoning: z.boolean().optional(),
-        thinkingLevelMap: z.partialRecord(ThinkingSchema, z.string().nullable()).optional(),
-        cost: z.strictObject({
-          input: z.number().finite().nonnegative(),
-          output: z.number().finite().nonnegative(),
-          cacheRead: z.number().finite().nonnegative(),
-          cacheWrite: z.number().finite().nonnegative(),
-        }),
-        input: z
-          .array(z.enum(["text", "image"]))
-          .min(1)
-          .optional(),
-        apiKeyEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-        headers: z.record(z.string(), z.string()).optional(),
-      }),
-    )
-    .min(1),
-  workspaces: z
-    .array(
-      z.strictObject({
-        id,
-        path: z.string().min(1),
-        models: z.array(z.string().min(1)).optional(),
-      }),
-    )
-    .min(1),
-});
-export type NativeRuntimeConfig = z.infer<typeof NativeRuntimeConfigSchema>;
+export { NativeRuntimeConfigSchema, type NativeRuntimeConfig } from "./native-runtime-config.js";
 
 export type NativeRuntimeTurn = {
-  binding: TurnBinding;
+  binding: { workspaceId: string; workspacePath?: string };
   selection: { provider: string; modelId: string };
 };
 export type NativeRuntimeResolved = {
@@ -97,11 +47,13 @@ type Workspace = {
   dev: number;
   ino: number;
   models: Set<string>;
+  scope?: "exact" | "subdirectories";
 };
 type RegisteredModel = {
   model: Model;
   apiKey: string;
   headers: Record<string, string>;
+  sensitiveHeaderNames: ReadonlySet<string>;
 };
 const SelectionSchema = z.strictObject({ provider, modelId: id });
 
@@ -193,7 +145,13 @@ export async function createNativeRuntime(
       Object.freeze(model.thinkingLevelMap);
     }
     Object.freeze(model);
-    models.set(ref, { model, apiKey, headers: Object.freeze(headers) });
+    const sensitiveHeaderNames = new Set(
+      (entry.sensitiveHeaderNames ?? []).map((name) => name.toLowerCase()),
+    );
+    if ([...sensitiveHeaderNames].some((name) => !Object.hasOwn(headers, name))) {
+      throw new Error("Sensitive native header name is not configured");
+    }
+    models.set(ref, { model, apiKey, headers: Object.freeze(headers), sensitiveHeaderNames });
   }
   credentials.clear();
   for (const entry of parsed.workspaces) {
@@ -218,6 +176,7 @@ export async function createNativeRuntime(
       dev: directory.dev,
       ino: directory.ino,
       models: allowed,
+      scope: entry.scope,
     });
   }
 
@@ -233,7 +192,7 @@ export async function createNativeRuntime(
   for (const entry of models.values()) {
     addProtocolSecret(entry.apiKey);
     for (const [name, value] of Object.entries(entry.headers)) {
-      if (value && isCredentialFieldName(name)) {
+      if (value && (isCredentialFieldName(name) || entry.sensitiveHeaderNames.has(name))) {
         addProtocolSecret(value);
         if (name === "authorization" || name === "proxy-authorization") {
           const token = /^(?:Bearer|Basic)\s+(\S+)$/iu.exec(value.trim())?.[1];
@@ -281,6 +240,29 @@ export async function createNativeRuntime(
         throw new Error("Native runtime workspace/model selection is not allowed");
       }
       await assertWorkspace(workspace);
+      const workspacePath = binding.workspacePath
+        ? await realpath(binding.workspacePath)
+        : workspace.canonicalPath;
+      if (
+        workspacePath !== workspace.canonicalPath &&
+        !(
+          workspace.scope === "subdirectories" &&
+          isPathInside(workspace.canonicalPath, workspacePath)
+        )
+      ) {
+        throw new Error("Native runtime workspace escapes its provisioned root");
+      }
+      const assignedStat = await stat(workspacePath);
+      if (!assignedStat.isDirectory()) {
+        throw new Error("Native runtime assigned workspace is not a directory");
+      }
+      const assignedWorkspace: Workspace = {
+        ...workspace,
+        sourcePath: binding.workspacePath ?? workspace.sourcePath,
+        canonicalPath: workspacePath,
+        dev: assignedStat.dev,
+        ino: assignedStat.ino,
+      };
       assertOpen();
       const controller = new AbortController();
       activeTurns.add(controller);
@@ -299,6 +281,7 @@ export async function createNativeRuntime(
           throw new Error("Native runtime requires the exact selected local model");
         }
         await assertWorkspace(workspace);
+        await assertWorkspace(assignedWorkspace);
         assertActive();
         // Do not spread caller options: agent-loop options also contain config,
         // callbacks and provider-specific overrides outside SimpleStreamOptions.
@@ -331,7 +314,7 @@ export async function createNativeRuntime(
         const result = await callback({
           model: registered.model,
           streamFn,
-          workspacePath: workspace.canonicalPath,
+          workspacePath,
           hasCredentialPrefix: (value) => {
             assertActive();
             return hasCredentialPrefix(value);
@@ -352,6 +335,7 @@ export async function createNativeRuntime(
         });
         assertActive();
         await assertWorkspace(workspace);
+        await assertWorkspace(assignedWorkspace);
         assertActive();
         return result;
       } finally {

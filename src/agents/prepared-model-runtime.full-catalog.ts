@@ -547,10 +547,6 @@ export function createPreparedModelRuntimeSnapshot(
     createStores,
     routeModelResolutionMemo: new Map<string, Promise<Model>>(),
   });
-  if (input.skipCredentials) {
-    setPreparedModelRuntimeAuthStore(snapshot, agentFacts.authStore);
-    return snapshot;
-  }
   setPreparedModelRuntimeAuthLabels(
     snapshot,
     withPluginRuntimeGenerationScope(

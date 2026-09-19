@@ -28,7 +28,6 @@ import {
   normalizeRootLogLevelArgv,
   normalizeRootNoColorArgv,
 } from "./argv.js";
-import { resolveCliCommandPathPolicy } from "./command-path-policy.js";
 import {
   isReservedNonPluginCommandRoot,
   shouldSkipPluginCommandRegistration,
@@ -1108,7 +1107,6 @@ async function runCliWithPreparedOutputMode(
   const isHelpOrVersionInvocation = normalizedInvocation.hasHelpOrVersion;
   const isGatewayRunInvocation = isGatewayRunInvocationArgv(normalizedArgv);
   const isDatabaseInvocation = normalizedInvocation.commandPath[0] === "database";
-  const loadDotEnv = resolveCliCommandPathPolicy(normalizedInvocation.commandPath).loadDotEnv;
   // Gateway pre-bootstrap owns state/config dotenv selection. This phase only
   // needs the workspace file, so avoid importing the loader when it is absent.
   const loadGlobalEnv = !isGatewayRunInvocation;
@@ -1132,7 +1130,6 @@ async function runCliWithPreparedOutputMode(
   if (
     !isHelpOrVersionInvocation &&
     !isDatabaseInvocation &&
-    loadDotEnv &&
     !isAgentExecInvocation(normalizedInvocation.commandPath) &&
     shouldLoadCliDotEnv(loadGlobalEnv)
   ) {
@@ -1142,7 +1139,7 @@ async function runCliWithPreparedOutputMode(
         await loadGatewayDispatchCliDotEnv({ quiet: true });
       } else {
         const { loadCliDotEnv } = await import("./dotenv.js");
-        loadCliDotEnv({ argv: normalizedArgv, loadGlobalEnv, quiet: true });
+        loadCliDotEnv({ loadGlobalEnv, quiet: true });
       }
     });
   }
@@ -1310,8 +1307,6 @@ async function runCliWithPreparedOutputMode(
     );
     if (
       !isDatabaseInvocation &&
-      // Diagnostic config reads can also import dotenv into process.env.
-      loadDotEnv &&
       (await Promise.all(startupTraces.map((trace) => trace.requiresDiagnosticsConfig()))).some(
         Boolean,
       )

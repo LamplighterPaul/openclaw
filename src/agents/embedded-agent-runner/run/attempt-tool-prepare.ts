@@ -16,7 +16,6 @@ import {
   resolveToolLoopDetectionConfig,
 } from "../../agent-tools.js";
 import { createSkillInstructionDeliveryCache } from "../../agent-tools.read.js";
-import { usesDedicatedBuiltinRuntime } from "../../builtin-runtime/selection.js";
 import { getChannelAgentToolMeta } from "../../channel-tools.js";
 import { createCodeModePermissionChangeReason } from "../../code-mode-permission-change.js";
 import type { CodeModeSkill } from "../../code-mode-skills.js";
@@ -78,7 +77,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
   const { attempt } = params;
-  const dedicatedRuntime = usesDedicatedBuiltinRuntime(attempt, attempt.provider, attempt.modelId);
   const requireExplicitMessageTarget =
     attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey);
   const forceDirectMessageTool = messageToolOwnsVisibleReply(attempt);
@@ -317,12 +315,9 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             },
             modelCompat: extractModelCompat(attempt.model),
             delegationCapability: attempt.delegationCapability,
-            // Inference auth belongs to the selected dedicated runtime, not the Gateway.
-            modelAuthMode: dedicatedRuntime
-              ? undefined
-              : resolveModelAuthMode(attempt.model.provider, attempt.config, undefined, {
-                  workspaceDir: params.setup.effectiveWorkspace,
-                }),
+            modelAuthMode: resolveModelAuthMode(attempt.model.provider, attempt.config, undefined, {
+              workspaceDir: params.setup.effectiveWorkspace,
+            }),
             includeCoreTools: toolConstructionPlan.includeCoreTools,
             includeToolSearchControls: toolSearchControlsEnabledForRun,
             toolSearchCatalogExecutor: params.toolSearchCatalogExecutor,
@@ -338,10 +333,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             inheritedToolAllowlistRef: inheritedToolAllowlist,
             cronCreatorToolAllowlistRef: cronCreatorToolAllowlist,
             cronCreatorToolAllowlistCaptureRef,
-            // An absent store preserves the tools' own lazy Gateway credential lookup.
-            authProfileStore: dedicatedRuntime
-              ? undefined
-              : (attempt.toolAuthProfileStore ?? attempt.authProfileStore),
+            authProfileStore: attempt.authProfileStore,
             recordToolPrepStage: params.markCoreToolStage,
             onToolOutcome: attempt.onToolOutcome,
             isTurnTainted: attempt.isTurnTainted,

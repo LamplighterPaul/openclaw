@@ -50,10 +50,7 @@ import type {
   PreparedModelRuntimeAgentFacts,
   PreparedModelRuntimeCatalogFacts,
 } from "./prepared-model-runtime.catalog-contract.js";
-import {
-  prepareCapturedRuntimeFacts,
-  prepareCredentialFreeRuntimeFacts,
-} from "./prepared-model-runtime.configured-catalog.js";
+import { prepareCapturedRuntimeFacts } from "./prepared-model-runtime.configured-catalog.js";
 import { completeConfiguredRuntimeModels } from "./prepared-model-runtime.configured-completion.js";
 import {
   collectPreparedModelRuntimeConfiguredRefs,
@@ -333,44 +330,42 @@ export async function prepareWorkspaceBuildGroup(
     // Static Gateway publication consumes discovery entrypoints; the run owns activation.
     const ambientCredentialsStartedAt = performance.now();
     reportStage("ambient credentials");
-    const ambientCredentials = inputs.every((candidate) => candidate.skipCredentials)
-      ? {}
-      : await prepareAmbientAgentCredentialsForDiscovery({
-          signal: options.signal,
-          config: input.config,
-          env,
-          authoritativeSyntheticAuthProviderRefs: pluginMetadataSnapshot.owners.cliBackends.keys(),
-          syntheticAuthProviderRefs:
-            catalogMode === "static"
-              ? scopeSyntheticAuthProviderRefs(
-                  listPreparedSyntheticAuthProviderRefs(preparedSyntheticAuthProviders),
-                  options.providerDiscoveryProviderIds,
-                )
-              : scopeSyntheticAuthProviderRefs(
-                  resolveRuntimeSyntheticAuthProviderRefs({
-                    config: input.config,
-                    env,
-                    index: pluginMetadataSnapshot.index,
-                    registryDiagnostics: pluginMetadataSnapshot.registryDiagnostics,
-                    ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
-                  }),
-                  configuredProviderIds,
-                ),
-          ...(catalogMode === "static"
-            ? {
-                resolveSyntheticAuth: (provider: string) =>
-                  prepareSyntheticAuth({
-                    signal: options.signal,
-                    config: input.config,
-                    env,
-                    workspaceDir: input.workspaceDir,
-                    provider,
-                    providers: preparedSyntheticAuthProviders,
-                  }),
-              }
-            : {}),
-          ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
-        });
+    const ambientCredentials = await prepareAmbientAgentCredentialsForDiscovery({
+      signal: options.signal,
+      config: input.config,
+      env,
+      authoritativeSyntheticAuthProviderRefs: pluginMetadataSnapshot.owners.cliBackends.keys(),
+      syntheticAuthProviderRefs:
+        catalogMode === "static"
+          ? scopeSyntheticAuthProviderRefs(
+              listPreparedSyntheticAuthProviderRefs(preparedSyntheticAuthProviders),
+              options.providerDiscoveryProviderIds,
+            )
+          : scopeSyntheticAuthProviderRefs(
+              resolveRuntimeSyntheticAuthProviderRefs({
+                config: input.config,
+                env,
+                index: pluginMetadataSnapshot.index,
+                registryDiagnostics: pluginMetadataSnapshot.registryDiagnostics,
+                ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
+              }),
+              configuredProviderIds,
+            ),
+      ...(catalogMode === "static"
+        ? {
+            resolveSyntheticAuth: (provider: string) =>
+              prepareSyntheticAuth({
+                signal: options.signal,
+                config: input.config,
+                env,
+                workspaceDir: input.workspaceDir,
+                provider,
+                providers: preparedSyntheticAuthProviders,
+              }),
+          }
+        : {}),
+      ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
+    });
     const ambientCredentialsMs = performance.now() - ambientCredentialsStartedAt;
     const agentFactsStartedAt = performance.now();
     reportStage("agent facts");
@@ -577,10 +572,9 @@ export function preparedModelInventoryKey(input: PreparedModelRuntimeInput): str
     config: { models, auth, env, plugins },
     env: input.env ?? process.env,
     runtimePluginSelections: undefined,
-    order: input.skipCredentials
-      ? {}
-      : (getPreparedRuntimeAuthProfileStoreSnapshotCore(input.agentDir, input.inheritedAuthDir)
-          ?.order ?? {}),
+    order:
+      getPreparedRuntimeAuthProfileStoreSnapshotCore(input.agentDir, input.inheritedAuthDir)
+        ?.order ?? {},
   });
 }
 export async function prepareConfiguredRuntimeFactsBatch(params: {
@@ -607,11 +601,6 @@ export async function prepareConfiguredRuntimeFactsBatch(params: {
   for (const facts of params.agentFacts) {
     await nextTurn();
     params.assertCurrent?.(facts.input);
-    if (facts.input.skipCredentials) {
-      catalogs.set(facts.input, prepareCredentialFreeRuntimeFacts(facts, params.pluginGeneration));
-      registryCount += 1;
-      continue;
-    }
     const modelsJsonContents = captureModelsJsonContents(facts.input.agentDir);
     const oauthProviders = facts.templateAuthStorage.getOAuthProviders();
     // Root files remain authored inventory even when static preparation returned an empty result.

@@ -1,5 +1,4 @@
 import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
-import { getAgentLoopRunner } from "../../../packages/agent-core/src/loop-host.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import { getStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import type { AssistantMessage, Model } from "../../llm/types.js";
@@ -174,9 +173,6 @@ export abstract class AgentSessionBase {
     apiKey: string;
     headers?: Record<string, string>;
   }> {
-    if (getAgentLoopRunner(this.agent)) {
-      throw new Error("Host model operations are not supported by the dedicated built-in runtime.");
-    }
     const result = await this.sessionModelRegistry.getApiKeyAndHeaders(model);
     if (!result.ok) {
       if (result.error.startsWith("No API key found")) {
@@ -188,7 +184,8 @@ export abstract class AgentSessionBase {
       return { apiKey: result.apiKey, headers: result.headers };
     }
 
-    if (this.sessionModelRegistry.isUsingOAuth(model)) {
+    const isOAuth = this.sessionModelRegistry.isUsingOAuth(model);
+    if (isOAuth) {
       throw new Error(
         `Authentication failed for "${model.provider}". ` +
           `Credentials may have expired or network is unavailable. ` +
@@ -202,11 +199,9 @@ export abstract class AgentSessionBase {
     apiKey?: string;
     headers?: Record<string, string>;
   }> {
-    // An attached loop owns inference, including auth lookup.
     if (
-      getAgentLoopRunner(this.agent) ||
       getStreamLlmRuntime(this.agent.streamFn) ===
-        getModelRegistryRuntime(this.sessionModelRegistry).llmRuntime
+      getModelRegistryRuntime(this.sessionModelRegistry).llmRuntime
     ) {
       return this.getRequiredRequestAuth(model);
     }
@@ -620,12 +615,13 @@ export abstract class AgentSessionBase {
    * Call this when completely done with the session.
    */
   dispose(): void {
-    for (const abortOperation of [
+    const abortOperations = [
       () => this.abortRetry(),
       () => this.abortCompaction(),
       () => this.abortBranchSummary(),
       () => this.agent.abort(),
-    ]) {
+    ];
+    for (const abortOperation of abortOperations) {
       try {
         abortOperation();
       } catch {
@@ -856,6 +852,7 @@ export abstract class AgentSessionBase {
       return this.exactBaseSystemPrompt;
     }
 
+    const loaderSystemPrompt = this.sessionResourceLoader.getSystemPrompt();
     const loaderAppendSystemPrompt = this.sessionResourceLoader.getAppendSystemPrompt();
     const appendSystemPrompt =
       loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
@@ -866,7 +863,7 @@ export abstract class AgentSessionBase {
       cwd: this.cwd,
       skills: loadedSkills,
       contextFiles: loadedContextFiles,
-      customPrompt: this.sessionResourceLoader.getSystemPrompt(),
+      customPrompt: loaderSystemPrompt,
       appendSystemPrompt,
       selectedTools: validToolNames,
       toolSnippets,

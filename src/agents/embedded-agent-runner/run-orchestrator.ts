@@ -30,7 +30,6 @@ import {
   runOutsidePluginRuntimeGenerationScope,
   withPluginRuntimeGenerationScope,
 } from "../../plugins/runtime/generation-scope.js";
-import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
 import {
   AsyncWorkScope,
   captureAsyncWorkTracker,
@@ -46,7 +45,6 @@ import {
   resolveRunModelFallbacksOverride,
 } from "../agent-scope.js";
 import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
-import { usesDedicatedBuiltinRuntime } from "../builtin-runtime/selection.js";
 import { runBestEffortCallback } from "../embedded-agent-subscribe.callback.js";
 import { resolveLegacyInheritedAuthDir } from "../legacy-inherited-auth-dir.js";
 import { resolveModelCandidateChain } from "../model-fallback-candidates.js";
@@ -265,24 +263,11 @@ async function runEmbeddedAgentInternal(
         // Subscription-scoped claude-cli auth executes via the CLI backend;
         // resolved post-admission so dispatched runs obey the same lifecycle,
         // placement, and concurrency gates as native embedded runs.
-        const initialSelection = resolveInitialEmbeddedRunModel({
-          config: params.config,
-          agentId: params.agentId,
-          provider: params.provider,
-          model: params.model,
+        const cliDispatched = await runEmbeddedAgentViaCliBackendIfEligible({
+          ...params,
+          // Preserve the admitted writer claim alongside the already resolved storage identity.
+          sessionTarget: { ...params.sessionTarget, ...runSessionTarget },
         });
-        const dedicatedRuntime =
-          [undefined, "openclaw"].includes(
-            resolveSessionPinnedHarnessId(sessionAdmission?.entry),
-          ) &&
-          usesDedicatedBuiltinRuntime(params, initialSelection.provider, initialSelection.modelId);
-        const cliDispatched = dedicatedRuntime
-          ? undefined
-          : await runEmbeddedAgentViaCliBackendIfEligible({
-              ...params,
-              // Preserve the admitted writer claim alongside the already resolved storage identity.
-              sessionTarget: { ...params.sessionTarget, ...runSessionTarget },
-            });
         if (cliDispatched) {
           return cliDispatched;
         }
@@ -329,30 +314,22 @@ async function runEmbeddedAgentInternal(
           model: requestedRuntimeSelection.modelId,
           requestedRouteResolution: params.requestedRouteResolution,
           fallbacksOverride: runtimePluginFallbacksOverride,
-        }).map((candidate, index) => {
-          // Preparation hints apply only to the requested route; each fallback owns its policy.
-          const runtime =
-            index === 0 || explicitHarnessRuntime ? requestedHarnessRuntime : undefined;
-          const candidateUsesDedicatedRuntime =
-            [undefined, "openclaw"].includes(
-              resolveSessionPinnedHarnessId(sessionAdmission?.entry),
-            ) &&
-            usesDedicatedBuiltinRuntime(
-              {
-                ...params,
-                config,
+        }).map((candidate, index) =>
+          requestedHarnessRuntime &&
+          // Preparation hints apply only to the requested route; fallbacks resolve their own policy.
+          (index === 0 || explicitHarnessRuntime)
+            ? {
+                provider: candidate.provider,
+                modelId: candidate.model,
+                runtime: requestedHarnessRuntime,
+                agentId: requestedWorkspaceResolution.agentId,
+              }
+            : {
+                provider: candidate.provider,
+                modelId: candidate.model,
                 agentId: requestedWorkspaceResolution.agentId,
               },
-              candidate.provider,
-              candidate.model,
-            );
-          return {
-            provider: candidate.provider,
-            modelId: candidate.model,
-            agentId: requestedWorkspaceResolution.agentId,
-            runtime: candidateUsesDedicatedRuntime ? "openclaw" : runtime,
-          };
-        });
+        );
         const preparedInput = {
           config,
           agentId: requestedWorkspaceResolution.agentId,
@@ -367,10 +344,6 @@ async function runEmbeddedAgentInternal(
             ? { loadRuntimePlugins: true }
             : {}),
           runtimePluginSelections,
-          // Fallback execution re-enters this owner with its selected model and acquires its
-          // own credential-bearing lease. Merely preparing its plugin must not grant the
-          // dedicated primary access to Gateway model credentials.
-          ...(dedicatedRuntime ? { skipCredentials: true } : {}),
         };
         startupStages.mark("harness-selection");
         const callerResult = createDeferredCore<EmbeddedAgentRunResult>();

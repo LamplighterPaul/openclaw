@@ -7,7 +7,7 @@ import type { Context } from "@openclaw/ai";
 import { registerSessionResourceCleanup } from "@openclaw/ai/internal/runtime";
 import { build } from "esbuild";
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   createNativeRuntime,
   NativeRuntimeConfigSchema,
@@ -15,7 +15,6 @@ import {
   type NativeRuntimeConfig,
   type NativeRuntimeResolved,
 } from "./native-runtime.js";
-import type { TurnBinding } from "./protocol.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const runtimes: NativeRuntime[] = [];
@@ -35,7 +34,7 @@ afterEach(async () => {
   );
   vi.unstubAllEnvs();
 });
-const binding: TurnBinding = {
+const binding = {
   gatewayId: "gateway",
   workspaceId: "workspace",
   sessionId: "session",
@@ -168,6 +167,24 @@ async function probe(scenario: string, config: NativeRuntimeConfig, env: NodeJS.
 }
 
 describe("native runtime startup authority", () => {
+  it("guards explicit custom authentication headers without blocking ordinary metadata", async () => {
+    const config = configFor(tempDirs.make("native-custom-header-"));
+    config.models[0]!.headers = { "x-route": "assistant", "x-session": "synthetic-custom-auth" };
+    config.models[0]!.sensitiveHeaderNames = ["X-Session"];
+    const runtime = await start(config);
+    await runtime.withTurn(turn, async (resolved) => {
+      expect(() => resolved.assertProtocolSafe({ role: "assistant" })).not.toThrow();
+      expect(() => resolved.assertProtocolSafe({ text: "synthetic-custom-auth" })).toThrow(
+        "Native credential appeared",
+      );
+      expect(resolved.hasCredentialPrefix("synthetic-custom-")).toBe(true);
+    });
+  });
+  it("rejects a missing explicitly classified authentication header", async () => {
+    const config = configFor(tempDirs.make("native-missing-header-"));
+    config.models[0]!.sensitiveHeaderNames = ["x-missing"];
+    await expect(start(config)).rejects.toThrow("Sensitive native header name is not configured");
+  });
   it("filters HTTP-normalized representations of startup credential values", async () => {
     const config = configFor(tempDirs.make("native-http-secret-"));
     config.models[0]!.headers = { "x-api-key": "  synthetic-header-secret  " };

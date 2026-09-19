@@ -278,6 +278,7 @@ export async function prepareNodeHostRuntime(params?: {
       preparedContainerSupervisor = createNodeWorkerSupervisor({
         env,
         capacity: config.nodeHost?.workerRuns?.capacity,
+        nativeInferenceConfig: config.nodeHost?.workerRuns?.nativeInferenceConfig,
         workspace: preparedContainerWorkspace,
         containerEngine,
         ...(config.nodeHost?.workerRuns?.containerImage
@@ -357,6 +358,7 @@ export async function prepareNodeHostRuntime(params?: {
           ? createNodeWorkerSupervisor({
               env,
               capacity: config.nodeHost?.workerRuns?.capacity,
+              nativeInferenceConfig: config.nodeHost?.workerRuns?.nativeInferenceConfig,
               onCapacityChanged: onRunnerCapacityChanged,
               workspace: workerWorkspace,
             })
