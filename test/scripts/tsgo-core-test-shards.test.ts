@@ -54,6 +54,8 @@ describe("tsgo core test shards", () => {
       }),
     ).toEqual([]);
     for (const [file, owner] of [
+      ["src/model-picker/apply-session-model-selection.test.ts", "agents-root"],
+      ["src/model-picker/apply-session-model-selection.runtime-diagnostics.test.ts", "agents-root"],
       ["ui/src/pages/chat/chat-send-submit.test.ts", "ui-chat"],
       ["ui/src/pages/config/config-page.test.ts", "ui-pages"],
       ["src/gateway/server-methods/update-chat-permission.test.ts", "gateway-methods"],
