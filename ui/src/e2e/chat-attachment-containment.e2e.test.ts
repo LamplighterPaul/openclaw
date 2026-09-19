@@ -48,10 +48,19 @@ suite.define(() => {
         await expect.poll(() => thumbnails.count()).toBe(12);
         await expect.poll(() => rail.locator('[aria-busy="true"]').count()).toBe(0);
         await expect.poll(() => rail.getAttribute("data-scrollable")).toBe("true");
-        await page.screenshot({
-          path: path.join(suite.artifactDir, "attachments.png"),
-          animations: "disabled",
-        });
+        const capture = async (position: "start" | "middle" | "end") => {
+          for (const theme of ["dark", "light"] as const) {
+            await page.emulateMedia({ colorScheme: theme });
+            await expect
+              .poll(() => page.locator("html").getAttribute("data-theme-mode"))
+              .toBe(theme);
+            await composer.screenshot({
+              path: path.join(suite.artifactDir, `${position}-${theme}.png`),
+              animations: "disabled",
+            });
+          }
+        };
+        await capture("start");
 
         const containment = await rail.evaluate((element) => {
           const surface = element.closest<HTMLElement>(".agent-chat__input")!;
@@ -70,9 +79,17 @@ suite.define(() => {
         expect(containment.surfaceOverflow).toBeLessThanOrEqual(1);
 
         await rail.evaluate((element) => {
+          element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
+        });
+        await expect.poll(() => rail.getAttribute("data-at-start")).toBe("false");
+        await expect.poll(() => rail.getAttribute("data-at-end")).toBe("false");
+        await capture("middle");
+
+        await rail.evaluate((element) => {
           element.scrollLeft = element.scrollWidth;
         });
         await expect.poll(() => rail.getAttribute("data-at-end")).toBe("true");
+        await capture("end");
         const remove = thumbnails.last().getByRole("button", { name: "Remove sample-12.png" });
         await remove.focus();
         const target = await remove.evaluate(async (element) => {
