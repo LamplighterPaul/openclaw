@@ -8,9 +8,11 @@ import {
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { verifyUpdateFailureRecovery } from "./update-command-failure-recovery.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import { completePostUpdateMaintenance } from "./update-command-post-update-maintenance.js";
@@ -24,6 +26,7 @@ import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   prepareUpdateServiceResult,
+  isVerifiedUpdateRollback,
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
   resolveAutomaticUpdateTriage,
@@ -56,9 +59,6 @@ import {
   deferUpdateCommandTerminalResult,
   recordUpdatePackageCompletion,
 } from "./update-command-terminal.js";
-import { recordFailedUpdateGatewayState } from "./update-command-verification.js";
-
-export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
 export async function finishUpdate(
   params: FinishUpdateParams,
@@ -276,18 +276,7 @@ export async function finishUpdate(
     );
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
-    const finalResult = completedResult({
-      ...result,
-      ...(result.status === "error" && !recoverService && !rolledBack
-        ? {
-            recovery:
-              result.recovery?.serviceRestartSafe === false ||
-              result.recovery?.packageRollbackVerified
-                ? result.recovery
-                : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-          }
-        : {}),
-    });
+    let finalResult = completedResult(result);
     pendingResult = finalResult;
     pendingNotify = notify;
     if (!restoreFailure) {
@@ -335,12 +324,6 @@ export async function finishUpdate(
       });
     }
     assertCurrent();
-    if (finalResult.status === "error" && !rolledBack && currentServiceStop()?.stopped) {
-      await recordFailedUpdateGatewayState(
-        params.opts.run,
-        currentServiceStop()?.serviceEnv ?? process.env,
-      );
-    }
     const completedBeforeCleanup = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
       : undefined;
@@ -388,7 +371,21 @@ export async function finishUpdate(
     assertCurrent();
     const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
     assertCurrent();
-    pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
+    if (finalResult.status === "error" || cleanupFailure) {
+      finalResult = await verifyUpdateFailureRecovery({
+        result: cleanupFailure?.result ?? finalResult,
+        root: params.root,
+        opts: params.opts,
+        env: currentServiceStop()?.serviceEnv ?? params.ownedManagedUpdateEnv,
+        timeoutMs: params.updateStepTimeoutMs,
+        serviceStopped: !rolledBack && currentServiceStop()?.stopped,
+        assertCurrent,
+      });
+      assertCurrent();
+      triageAllowed &&= !isUpdateGatewayReadinessPending(finalResult);
+      rolledBack &&= isVerifiedUpdateRollback(finalResult);
+    }
+    pendingResult = completedResult(finalResult);
     terminalRecord = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, pendingResult, assertCurrent)
       : undefined;
@@ -710,7 +707,11 @@ export async function finishUpdate(
         cause: error,
       });
     }
-    if (error instanceof UpdateCommandFailure || isPendingUpdateServiceLoad(error)) {
+    if (
+      error instanceof UpdateCommandFailure ||
+      isPendingUpdateServiceLoad(error) ||
+      hasCommandProcessCleanupError(error)
+    ) {
       // Staging may already have changed files. Keep intent/material for fenced reconciliation.
       throw error;
     }
