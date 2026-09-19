@@ -427,7 +427,7 @@ async function loadRestartSentinelStartupTask(params: {
 }): Promise<StartupTask | null> {
   const noticeContext = captureDeliveryQueueStateContext();
   const queueContext = noticeContext.workerContext;
-  const sentinel = await readRestartSentinel();
+  const sentinel = await readRestartSentinel(queueContext.environment);
   if (!sentinel) {
     return null;
   }
@@ -511,7 +511,7 @@ async function loadRestartSentinelStartupTask(params: {
         !updateRun.origin.deliveryContext
       ) {
         recordUpdateRunNoticeSkipped(updateRun.runId, "no delivery target");
-        await clearRestartSentinelIfRevision(sentinelRevision);
+        await clearRestartSentinelIfRevision(sentinelRevision, queueContext.environment);
         return { status: "ran" as const };
       }
       const targetlessCliOutcome =
@@ -530,7 +530,10 @@ async function loadRestartSentinelStartupTask(params: {
       if (controlPlaneOnlyAcknowledgement) {
         // A targetless control-plane/CLI acknowledgement has no agent turn to
         // resume. An inferred wake can bootstrap an unrelated workspace on boot.
-        const consumed = await clearRestartSentinelIfRevision(sentinelRevision);
+        const consumed = await clearRestartSentinelIfRevision(
+          sentinelRevision,
+          queueContext.environment,
+        );
         if (!consumed) {
           log.info(`${summary}: newer restart sentinel preserved while consuming acknowledgement`);
         }
@@ -555,7 +558,7 @@ async function loadRestartSentinelStartupTask(params: {
     if (target.kind === "none") {
       recordUpdateRunNoticeSkipped(updateRunId, target.reason);
       // A diagnostic wake would bypass the same owner-only notice decision.
-      await clearRestartSentinelIfRevision(sentinelRevision);
+      await clearRestartSentinelIfRevision(sentinelRevision, queueContext.environment);
       return { status: "ran" as const };
     }
     const route = target.kind === "route" ? target.route : undefined;
@@ -659,7 +662,10 @@ async function loadRestartSentinelStartupTask(params: {
 
     // Every downstream intent is durable before consuming the singleton. A
     // failed or stale compare-delete cannot lose work or remove a newer row.
-    const consumed = await clearRestartSentinelIfRevision(sentinelRevision);
+    const consumed = await clearRestartSentinelIfRevision(
+      sentinelRevision,
+      queueContext.environment,
+    );
     if (!consumed) {
       log.info(`${summary}: newer restart sentinel preserved while draining durable work`, {
         sessionKey: canonicalKey,
