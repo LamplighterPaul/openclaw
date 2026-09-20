@@ -5,6 +5,7 @@ import {
   assertSessionTranscriptHot,
   SessionTranscriptColdError,
 } from "./session-cold-storage-state.js";
+import type { SessionColdReadPreparation } from "./session-cold-storage.js";
 
 /** The cold marker and hot rows must belong to one snapshot, including cached statement lookups. */
 export function readHotSessionTranscriptSnapshot<T>(
@@ -36,7 +37,11 @@ export function readHotSessionTranscriptSnapshot<T>(
 export async function readRestoredSessionTranscript<T>(
   scope: SessionTranscriptReadScope,
   read: () => T | Promise<T>,
-  options?: { readOnly?: boolean; assertCurrent?: () => void },
+  options?: {
+    readOnly?: boolean;
+    assertCurrent?: () => void;
+    coldRead?: SessionColdReadPreparation;
+  },
 ): Promise<T> {
   options?.assertCurrent?.();
   // Read workers report cold storage to their host; only the host restores it.
@@ -44,14 +49,14 @@ export async function readRestoredSessionTranscript<T>(
     return read();
   }
   const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
-  await restoreSessionColdTranscript(scope, options?.assertCurrent);
+  await restoreSessionColdTranscript(scope, options?.assertCurrent, options?.coldRead);
   try {
     return await read();
   } catch (error) {
     if (!(error instanceof SessionTranscriptColdError) || error.sessionId !== scope.sessionId) {
       throw error;
     }
-    await restoreSessionColdTranscript(scope, options?.assertCurrent);
+    await restoreSessionColdTranscript(scope, options?.assertCurrent, options?.coldRead);
     return await read();
   }
 }
