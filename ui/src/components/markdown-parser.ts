@@ -3,9 +3,9 @@ import markdownItCjkFriendly from "markdown-it-cjk-friendly";
 import markdownItTaskLists from "markdown-it-task-lists";
 import { t } from "../i18n/index.ts";
 import { fileKindForPath, shortestFileLabels } from "./file-kind.ts";
+import { isGitHubHost } from "./github-link-eligibility.ts";
 import {
   decodeGitHubPathSegment,
-  isGitHubHost,
   parseGitHubItemPath,
   parseGitHubLinkTarget,
 } from "./github-link-target.ts";

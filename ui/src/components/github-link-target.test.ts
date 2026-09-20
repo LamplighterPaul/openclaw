@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { matchGitHubItemUrl } from "./github-link-eligibility.ts";
 import { parseGitHubLinkTarget } from "./github-link-target.ts";
 
 describe("GitHub issue and pull-request preview targets", () => {
@@ -13,6 +14,7 @@ describe("GitHub issue and pull-request preview targets", () => {
     ["HTTPS://GITHUB.COM:443/acme/project/pull/42", "pull"],
     ["https://github.com/%61cme/project/pull/42", "pull"],
   ])("preserves resource identity and destination for %s", (href, kind) => {
+    expect(matchGitHubItemUrl(new URL(href))).not.toBeNull();
     expect(parseGitHubLinkTarget(href)).toEqual({
       kind,
       owner: "acme",
@@ -40,6 +42,12 @@ describe("GitHub issue and pull-request preview targets", () => {
     "http://github.com/acme/project/pull/42",
     "https://github.com:8443/acme/project/pull/42",
     "https://github.com/acme/project/pull/0",
+    "https://github.com/acme/project/p%75ll/42",
+    "https://github.com/acme/project/pull/%34%32",
+    "https://github.com/" + "a".repeat(40) + "/project/pull/42",
+    "https://github.com/acme/" + "r".repeat(101) + "/pull/42",
+    "https://github.com/acme/project.git/pull/42",
+    "https://github.com/acme/project.atom/pull/42",
     "https://github.com/acme/project/pull/42/login",
     "https://github.com/acme/project/issues/42/files",
     "https://github.com/acme/project/pull/42/files/extra",
@@ -48,6 +56,7 @@ describe("GitHub issue and pull-request preview targets", () => {
     "https://github.com/%20acme/project/pull/42",
     "https://github.com/acme/project%2Fother/pull/42",
   ])("does not infer an issue or PR from %s", (href) => {
+    expect(matchGitHubItemUrl(new URL(href))).toBeNull();
     expect(parseGitHubLinkTarget(href)).toBeNull();
   });
 });
