@@ -358,7 +358,7 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
         sourceSessionKey: "agent:main:webchat:direct:target",
         sourceTool: "sessions_send",
       });
-      expect(gatewayCalls).toEqual([]);
+      expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
     },
   );
 
@@ -384,6 +384,40 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
       sourceTool: "sessions_send",
     });
     expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
+  });
+
+  it("preserves an undelivered target-channel announcement for an internal requester", async () => {
+    vi.mocked(runAgentStep)
+      .mockResolvedValueOnce("Requester acknowledged the result")
+      .mockResolvedValueOnce("Target channel announcement");
+
+    await runSessionsSendA2AFlow({
+      targetAgentId: "main",
+      targetSessionKey: "agent:main:discord:channel:target-room",
+      displayKey: "agent:main:discord:channel:target-room",
+      message: "Test message",
+      announceTimeoutMs: 10_000,
+      maxPingPongTurns: 5,
+      requesterSessionKey: "agent:main:webchat:direct:requester",
+      requesterChannel: "webchat",
+      roundOneReply: "Result for both conversations",
+    });
+
+    expect(runAgentStep).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runAgentStep).mock.calls[0]?.[0]).toMatchObject({
+      sessionKey: "agent:main:webchat:direct:requester",
+      message: "Result for both conversations",
+      sourceSessionKey: "agent:main:discord:channel:target-room",
+    });
+    expect(vi.mocked(runAgentStep).mock.calls[1]?.[0]).toMatchObject({
+      sessionKey: "agent:main:discord:channel:target-room",
+      message: "Agent-to-agent announce step.",
+    });
+    expect(requireGatewayCall("send").params).toMatchObject({
+      channel: "discord",
+      to: "channel:target-room",
+      message: "Target channel announcement",
+    });
   });
 
   it("does not run the announce decider for same-session sends without an announce target", async () => {

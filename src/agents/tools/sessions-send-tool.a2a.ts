@@ -189,15 +189,18 @@ export async function runSessionsSendA2AFlow(params: {
     }
     // Control UI sessions are human-facing conversations, not autonomous peers.
     // Deliver the target result to the requester once, but do not feed the
-    // requester's human-facing response back into the target session.
-    if (
+    // requester's human-facing response back into the target session. Preserve
+    // any still-owed announcement to a target's external channel below.
+    const oneWayInternalRequesterSessionKey =
       params.requesterSessionKey &&
       !sameSessionSourceReply &&
       isInternalMessageChannel(params.requesterChannel)
-    ) {
+        ? params.requesterSessionKey
+        : undefined;
+    if (oneWayInternalRequesterSessionKey) {
       await runAgentStep({
         agentId: params.requesterAgentId,
-        sessionKey: params.requesterSessionKey,
+        sessionKey: oneWayInternalRequesterSessionKey,
         message: latestReply,
         extraSystemPrompt: `Another session returned the result of your earlier sessions_send request. ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION} This result is delivered once; your response will not be sent back to the target session.`,
         timeoutMs: params.announceTimeoutMs,
@@ -206,7 +209,9 @@ export async function runSessionsSendA2AFlow(params: {
         sourceTool: "sessions_send",
         callGateway: gatewayCall,
       });
-      return;
+      if (sourceReplyDelivered) {
+        return;
+      }
     }
 
     const announceTarget = await resolveAnnounceTarget({
@@ -216,6 +221,12 @@ export async function runSessionsSendA2AFlow(params: {
       agentId: params.targetAgentId,
     });
     const targetChannel = announceTarget?.channel ?? "unknown";
+    if (
+      oneWayInternalRequesterSessionKey &&
+      (!announceTarget || isInternalMessageChannel(announceTarget.channel))
+    ) {
+      return;
+    }
     const canDirectDeliverSameSessionReply =
       announceTarget &&
       (!params.requesterChannel || params.requesterChannel === announceTarget.channel);
@@ -233,7 +244,12 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
 
-    if (params.maxPingPongTurns > 0 && params.requesterSessionKey && !sameSessionSourceReply) {
+    if (
+      !oneWayInternalRequesterSessionKey &&
+      params.maxPingPongTurns > 0 &&
+      params.requesterSessionKey &&
+      !sameSessionSourceReply
+    ) {
       const requester = {
         sessionKey: params.requesterSessionKey,
         agentId: params.requesterAgentId,
