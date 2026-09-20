@@ -130,7 +130,6 @@ export async function finishUpdate(
       pendingRestartAtMs = undefined;
     }
   };
-  const completedResult = (result: UpdateRunResult) => completeUpdateCommandResult(params, result);
   const recordNextAction = (
     result: UpdateRunResult,
     committed?: UpdateCommandTerminalRecord["record"],
@@ -276,7 +275,8 @@ export async function finishUpdate(
     );
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
-    let finalResult = completedResult(result);
+    let finalResult = completeUpdateCommandResult(params, result);
+    let root = finalResult.root ?? params.root;
     pendingResult = finalResult;
     pendingNotify = notify;
     if (!restoreFailure) {
@@ -346,6 +346,7 @@ export async function finishUpdate(
         invocationCwd: params.invocationCwd,
       });
       if (service && !params.originalManagedServiceRuntime) {
+        root = serviceVerdict && "root" in serviceVerdict ? serviceVerdict.root : root;
         finalResult.recovery = { ...finalResult.recovery, service };
         if (service === "healthy" && params.shouldRestart) {
           gateway = "verify-running";
@@ -375,7 +376,7 @@ export async function finishUpdate(
     if ((finalResult.status === "error" || cleanupFailure) && !originalServiceRecoveryHandled) {
       finalResult = await verifyUpdateFailureRecovery({
         result: finalResult,
-        root: params.root,
+        root,
         opts: params.opts,
         env: currentServiceStop()?.serviceEnv ?? params.ownedManagedUpdateEnv,
         timeoutMs: params.updateStepTimeoutMs,
@@ -386,7 +387,7 @@ export async function finishUpdate(
       triageAllowed &&= !isUpdateGatewayReadinessPending(finalResult);
       rolledBack &&= isVerifiedUpdateRollback(finalResult);
     }
-    pendingResult = completedResult(finalResult);
+    pendingResult = completeUpdateCommandResult(params, finalResult);
     terminalRecord = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, pendingResult, assertCurrent)
       : undefined;
