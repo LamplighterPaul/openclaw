@@ -1,4 +1,5 @@
 import path from "node:path";
+import { revokeTranscriptStartRetries } from "./capture-startup.js";
 import { persistTranscriptSummary } from "./capture-summary.js";
 import {
   activeSessions,
@@ -6,7 +7,6 @@ import {
   isTranscriptSelectionCurrent,
   isTranscriptSelectionOwned,
   isTranscriptSessionStarting,
-  revokeTranscriptStartRetries,
   stopTranscriptProviderCapture,
   type TranscriptCaptureSelection,
   type TranscriptsRuntimeContext,

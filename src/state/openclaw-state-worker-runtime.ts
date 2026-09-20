@@ -101,6 +101,7 @@ import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contr
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
+import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -383,6 +384,9 @@ export function executeSharedStateCommand(
   const database = open();
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
+  }
+  if (command.type === "transcripts.append") {
+    return appendTranscriptInWorker(command.input, { database, path: context.databasePath });
   }
   switch (command.type) {
     case "transcripts.sessionEntries":
