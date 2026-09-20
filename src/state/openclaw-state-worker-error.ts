@@ -3,6 +3,7 @@ import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
 import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
@@ -37,7 +38,8 @@ type ErrorIdentity =
         | "coordinator"
         | "range-error"
         | "syntax-error"
-        | "type-error";
+        | "type-error"
+        | "skill-upload-request";
     }
   | { type: "coordinator-contention"; family: CoordinatorFamily }
   | { type: "ownership-metadata"; databasePath: string }
@@ -66,6 +68,9 @@ export type OpenClawStateWorkerErrorPayload = {
 type ErrorGraphOptions = { includeOrdinary?: boolean };
 
 function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof SkillUploadRequestError) {
+    return { type: "skill-upload-request" };
+  }
   if (error instanceof StateDatabaseCoordinatorContentionError) {
     return { type: "coordinator-contention", family: error.family };
   }
@@ -204,6 +209,7 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "range-error":
     case "syntax-error":
     case "type-error":
+    case "skill-upload-request":
       return { type: node.type };
     case "coordinator-contention":
       return node.family === "gateway-lifecycle" ||
@@ -326,6 +332,8 @@ function createError(node: ErrorNode): Error {
       return new SyntaxError(node.message);
     case "type-error":
       return new TypeError(node.message);
+    case "skill-upload-request":
+      return new SkillUploadRequestError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
     case "coordinator":
