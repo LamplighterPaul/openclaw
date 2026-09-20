@@ -1,11 +1,20 @@
 import type { DatabaseSync } from "node:sqlite";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
+import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import {
   assertSessionTranscriptHot,
   SessionTranscriptColdError,
+  type SessionColdArchive,
 } from "./session-cold-storage-state.js";
-import type { SessionColdReadPreparation } from "./session-cold-storage.js";
+
+/** History callers retain their prepared physical target and read owner through restoration. */
+export type SessionColdReadPreparation = {
+  target: ResolvedTranscriptReadScope;
+  readMetadata: (
+    phase: "initial" | "queued",
+  ) => Promise<Omit<SessionColdArchive, "archive_blob"> | undefined>;
+};
 
 /** The cold marker and hot rows must belong to one snapshot, including cached statement lookups. */
 export function readHotSessionTranscriptSnapshot<T>(

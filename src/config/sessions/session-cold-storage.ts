@@ -37,14 +37,11 @@ import {
   resolveSqliteTranscriptReadScope,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
-  type ResolvedTranscriptReadScope,
 } from "./session-accessor.sqlite-scope.js";
 import { withSqliteMutationWorkerLifetime } from "./session-accessor.sqlite-worker-request.js";
 import { readSessionColdStorageProtection } from "./session-cold-storage-eligibility.js";
-import {
-  readSessionColdTranscript,
-  type SessionColdArchive,
-} from "./session-cold-storage-state.js";
+import type { SessionColdReadPreparation } from "./session-cold-storage-read.js";
+import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import type {
   SessionColdMutationPlan,
   SessionColdBatchInput,
@@ -371,14 +368,6 @@ async function archiveSessionColdBatch(options: ColdBatchOptions): Promise<ColdB
     };
   });
 }
-
-/** History callers retain their prepared physical target and read owner through restoration. */
-export type SessionColdReadPreparation = {
-  target: ResolvedTranscriptReadScope;
-  readMetadata: (
-    phase: "initial" | "queued",
-  ) => Promise<Omit<SessionColdArchive, "archive_blob"> | undefined>;
-};
 
 export async function restoreSessionColdTranscript(
   scope: SessionTranscriptReadScope,
