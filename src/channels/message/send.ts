@@ -16,10 +16,12 @@ import {
 } from "../../infra/outbound/deliver-types.js";
 import {
   deliverOutboundPayloadsInternal,
+  deliverStructuredOutboundPayloadsInternal,
   type DeliverOutboundPayloadsParams,
   type OutboundDeliveryIntent,
 } from "../../infra/outbound/deliver.js";
 import type { ConversationDeliveryTarget } from "../../infra/outbound/delivery-completion.js";
+import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { normalizeOutboundReplyFacts } from "../../infra/outbound/reply-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createLiveMessageState, markLiveMessagePreviewUpdated } from "./live.js";
@@ -216,6 +218,20 @@ export async function withDurableMessageSendContextCore<T>(
   conversationDeliveryTarget?: ConversationDeliveryTarget,
   queueContext?: DeliveryQueueStateContext,
 ): Promise<T> {
+  return await withMessageSendContext(
+    params,
+    run,
+    (delivery) => deliverOutboundPayloadsInternal(delivery, queueContext),
+    conversationDeliveryTarget,
+  );
+}
+
+async function withMessageSendContext<T>(
+  params: DurableMessageSendContextParams,
+  run: (ctx: DurableMessageSendContext) => Promise<T>,
+  deliver: typeof deliverOutboundPayloadsInternal,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
+): Promise<T> {
   let deliveryIntent: OutboundDeliveryIntent | undefined;
   const {
     attempt,
@@ -260,28 +276,25 @@ export async function withDurableMessageSendContextCore<T>(
     send: async (rendered): Promise<DurableMessageBatchSendResult> => {
       const payloadOutcomes: OutboundPayloadDeliveryOutcome[] = [];
       try {
-        const results = await deliverOutboundPayloadsInternal(
-          {
-            ...deliveryParams,
-            // Public SDK callers cannot select a private conversation storage target.
-            conversationDeliveryTarget,
-            payloads: rendered.payloads,
-            renderedBatchPlan: rendered.plan,
-            queuePolicy,
-            ...(effectiveSignal ? { abortSignal: effectiveSignal } : {}),
-            onPayloadDeliveryOutcome: (outcome) => {
-              payloadOutcomes.push(outcome);
-              onPayloadDeliveryOutcome?.(outcome);
-            },
-            onDeliveryIntent: (intent) => {
-              deliveryIntent = intent;
-              const durableIntent = toDurableMessageIntent(intent, rendered);
-              ctx.intent = durableIntent;
-              onDeliveryIntent?.(durableIntent);
-            },
+        const results = await deliver({
+          ...deliveryParams,
+          // Public SDK callers cannot select a private conversation storage target.
+          conversationDeliveryTarget,
+          payloads: rendered.payloads,
+          renderedBatchPlan: rendered.plan,
+          queuePolicy,
+          ...(effectiveSignal ? { abortSignal: effectiveSignal } : {}),
+          onPayloadDeliveryOutcome: (outcome) => {
+            payloadOutcomes.push(outcome);
+            onPayloadDeliveryOutcome?.(outcome);
           },
-          queueContext,
-        );
+          onDeliveryIntent: (intent) => {
+            deliveryIntent = intent;
+            const durableIntent = toDurableMessageIntent(intent, rendered);
+            ctx.intent = durableIntent;
+            onDeliveryIntent?.(durableIntent);
+          },
+        });
         const receipt = createMessageReceiptFromOutboundResults({
           results,
           threadId: params.threadId == null ? undefined : String(params.threadId),
@@ -405,6 +418,33 @@ export async function sendDurableMessageBatchCore(
   conversationDeliveryTarget?: ConversationDeliveryTarget,
   queueContext?: DeliveryQueueStateContext,
 ): Promise<DurableMessageBatchSendResult> {
+  return await sendMessageBatch(
+    params,
+    (delivery) => deliverOutboundPayloadsInternal(delivery, queueContext),
+    conversationDeliveryTarget,
+  );
+}
+
+export async function sendStructuredDurableMessageBatchCore(
+  input: Omit<DurableMessageSendContextParams, "payloads"> & {
+    plan: readonly OutboundPayloadPlan[];
+  },
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
+): Promise<DurableMessageBatchSendResult> {
+  const { plan, ...params } = input;
+  return await sendMessageBatch(
+    { ...params, payloads: plan.map((entry) => entry.payload) },
+    ({ payloads: _payloads, ...delivery }) =>
+      deliverStructuredOutboundPayloadsInternal({ ...delivery, plan }),
+    conversationDeliveryTarget,
+  );
+}
+
+async function sendMessageBatch(
+  params: DurableMessageSendContextParams,
+  deliver: typeof deliverOutboundPayloadsInternal,
+  conversationDeliveryTarget?: ConversationDeliveryTarget,
+): Promise<DurableMessageBatchSendResult> {
   const pendingFinalCompletion = params.deliveryCompletion
     ? undefined
     : resolvePendingFinalDeliveryCompletion(params.payloads);
@@ -439,7 +479,7 @@ export async function sendDurableMessageBatchCore(
           }
         }
       : params.assertDirectAdapterHandoff;
-  return await withDurableMessageSendContextCore(
+  return await withMessageSendContext(
     {
       ...params,
       ...pendingFinalDelivery,
@@ -456,7 +496,7 @@ export async function sendDurableMessageBatchCore(
       }
       return result;
     },
+    deliver,
     conversationDeliveryTarget,
-    queueContext,
   );
 }
