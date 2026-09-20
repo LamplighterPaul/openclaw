@@ -4,5 +4,4 @@ export {
   isRenderablePayload,
   shouldSuppressReasoningPayload,
 } from "../reply-payload.js";
-export { applyReplyTagsToPayload } from "./reply-payloads-base.js";
 export { filterMessagingToolReplyPayload } from "./reply-payloads-dedupe.js";
