@@ -114,10 +114,11 @@ export async function sendGatewayLifecycleNotice(
     deps: CliDeps;
     deliveryIntentId: string;
   },
+  capturedContext?: DeliveryQueueStateContext,
 ): Promise<boolean> {
   let delivered = false;
   try {
-    const context = captureDeliveryQueueStateContext();
+    const context = capturedContext ?? captureDeliveryQueueStateContext();
     await withTimeout(
       // The response deadline does not end transport or commit-hook ownership.
       trackAsyncWork(async () => {

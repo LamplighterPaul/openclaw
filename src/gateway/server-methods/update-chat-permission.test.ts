@@ -149,6 +149,7 @@ describe("update.run chat restart permission", () => {
       expect(payload.ackDelivered).toBe(true);
       expect(sendGatewayLifecycleNoticeMock).toHaveBeenLastCalledWith(
         expect.objectContaining({ message: expect.stringContaining("commands.restart") }),
+        expect.any(Object),
       );
     },
   );

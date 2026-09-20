@@ -7,7 +7,6 @@ import {
 import {
   loadDeliveryQueueEntryInDatabase,
   type DeliveryQueueReadMode,
-  type UpsertDeliveryQueueEntryParams,
 } from "./delivery-queue-sqlite-bound.js";
 import {
   countPendingDeliveryQueueEntriesInDatabase,
@@ -19,7 +18,6 @@ import {
   reserveDeliveryQueueEntryAttemptInDatabase,
   terminalizePendingDeliveryQueueEntryInDatabase,
   updateDeliveryQueueEntryInDatabase,
-  upsertDeliveryQueueEntryInDatabase,
   type DeliveryQueueStoredStatus,
   type ReserveDeliveryQueueAttemptResult,
   type TerminalizePendingDeliveryQueueEntryParams,
@@ -47,14 +45,6 @@ function openStateDatabase(stateDir?: string, context?: DeliveryQueueStateContex
   return openOpenClawStateDatabase({
     env: resolveDeliveryQueueStateEnv(stateDir, context),
   });
-}
-
-/** Insert or replace a delivery queue entry under a queue namespace. */
-export function upsertDeliveryQueueEntry(
-  params: UpsertDeliveryQueueEntryParams,
-  context?: DeliveryQueueStateContext,
-): boolean {
-  return upsertDeliveryQueueEntryInDatabase(params, openStateDatabase(params.stateDir, context));
 }
 
 /** Load a single pending delivery queue entry. */
@@ -170,11 +160,15 @@ export async function countFailedDeliveryQueueEntries(
 export function countPendingDeliveryQueueEntries(
   queueNames: readonly string[],
   stateDir?: string,
+  context?: DeliveryQueueStateContext,
 ): number {
   if (queueNames.length === 0) {
     return 0;
   }
-  return countPendingDeliveryQueueEntriesInDatabase(openStateDatabase(stateDir), queueNames);
+  return countPendingDeliveryQueueEntriesInDatabase(
+    openStateDatabase(stateDir, context),
+    queueNames,
+  );
 }
 
 /** Inventory retired custody without opening a writer or creating state. */
