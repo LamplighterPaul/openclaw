@@ -233,7 +233,7 @@ describe("transcript payload storage boundary", () => {
         getNodeSqliteKysely<PayloadDatabase>(database)
           .selectFrom("transcript_events")
           .select([
-            transcriptEventModelBytesSql(database, sql.lit(0)).as("stored"),
+            transcriptEventModelBytesSql(sql.lit(0)).as("stored"),
             sql<number>`octet_length(${projected})`.as("native"),
           ]),
       );
@@ -334,8 +334,8 @@ describe("transcript payload storage boundary", () => {
         db
           .selectFrom("transcript_events")
           .select([
-            transcriptEventModelBytesSql(database, sql.lit(0)).as("model"),
-            transcriptEventModelBytesSql(database, sql.lit(1)).as("withoutCheckpoint"),
+            transcriptEventModelBytesSql(sql.lit(0)).as("model"),
+            transcriptEventModelBytesSql(sql.lit(1)).as("withoutCheckpoint"),
             transcriptEventWithoutCustomDataBytesSql().as("withoutData"),
             transcriptEventModelNavigationSql().as("navigation"),
           ]),

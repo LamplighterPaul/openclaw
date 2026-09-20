@@ -456,7 +456,6 @@ function withTranscriptContextSnapshot<T>(
                   .select((eb) => [
                     "seq",
                     transcriptEventModelBytesSql(
-                      database.db,
                       omitted.length
                         ? eb.case().when("seq", "in", omitted).then(1).else(0).end()
                         : eb.val(0),

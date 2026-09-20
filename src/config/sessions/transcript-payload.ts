@@ -69,12 +69,21 @@ function readNavigation(database: DatabaseSync, eventJson: string): string | nul
         const metadata = db
           .selectFrom(db.selectNoFrom(parameter((value) => value).as("event_json")).as("source"))
           .select(navigationProjection().as("navigation_json"));
-        return db.selectFrom(metadata.as("metadata")).select(
-          /* kysely-allow-raw: reject oversized metadata inside SQLite before its text crosses into JavaScript. */
-          sql<
-            string | null
-          >`CASE WHEN octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
-            THEN metadata.navigation_json ELSE NULL END`.as("navigation_json"),
+        return (
+          db
+            // The size guard and returned value must reuse one envelope, not flatten into two projections.
+            .with(
+              (cte) => cte("metadata").materialized(),
+              () => metadata,
+            )
+            .selectFrom("metadata")
+            .select(
+              /* kysely-allow-raw: reject oversized metadata inside SQLite before its text crosses into JavaScript. */
+              sql<
+                string | null
+              >`CASE WHEN octet_length(metadata.navigation_json) <= ${MAX_NAVIGATION_BYTES}
+              THEN metadata.navigation_json ELSE NULL END`.as("navigation_json"),
+            )
         );
       },
     );
@@ -215,7 +224,6 @@ export function transcriptEventModelNavigationSql(alias = "transcript_events"): 
 
 /** Model admission retains projected byte costs, which can be much smaller than canonical JSON. */
 export function transcriptEventModelBytesSql(
-  _database: DatabaseSync,
   omitCheckpoint: Expression<number>,
   alias = "transcript_events",
 ): RawBuilder<number> {

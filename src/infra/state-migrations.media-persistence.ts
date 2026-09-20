@@ -56,6 +56,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   clearNodeSqliteKyselyCacheForDatabase,
+  enableNodeSqliteKyselyStatementCache,
 } from "./kysely-sync.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { replaceFileAtomicSync } from "./replace-file.js";
@@ -403,6 +404,7 @@ async function migrateAgentDatabase(params: {
     });
   try {
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+    enableNodeSqliteKyselyStatementCache(database);
     let metadata = assertOpenClawAgentDatabaseOwner(database, {
       agentId: params.agentId,
       pathname: params.pathname,
