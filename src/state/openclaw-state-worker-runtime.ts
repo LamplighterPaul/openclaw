@@ -37,6 +37,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { executeOperatorApprovalCommand } from "../gateway/operator-approval-store.worker.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
@@ -381,10 +382,18 @@ export function executeSharedStateCommand(
       : read(open().db);
   }
   const database = open();
+  const databaseOptions = () => ({
+    database,
+    path: context.databasePath,
+    env: getSqliteWorkerStateContext().environment,
+  });
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
   switch (command.type) {
+    case "operatorApproval.getDetailed":
+    case "operatorApproval.history":
+      return executeOperatorApprovalCommand(command, databaseOptions());
     case "transcripts.sessionEntries":
     case "transcripts.matches":
     case "transcripts.session":
@@ -398,9 +407,7 @@ export function executeSharedStateCommand(
     case "transcripts.utterances":
     case "transcripts.summary": {
       ensureMeetingTranscriptsSchema({
-        database,
-        path: context.databasePath,
-        env: getSqliteWorkerStateContext().environment,
+        ...databaseOptions(),
         readOnly: command.input.readOnly,
       });
       return executeTranscriptRead(database.db, command);
@@ -435,11 +442,7 @@ export function executeSharedStateCommand(
     command.type === "nativeHookRelay.deleteOwned" ||
     command.type === "nativeHookRelay.prune"
   ) {
-    return executeNativeHookRelayMutation(command, {
-      database,
-      path: context.databasePath,
-      env: getSqliteWorkerStateContext().environment,
-    });
+    return executeNativeHookRelayMutation(command, databaseOptions());
   }
   if (command.type === "sessionUpstream.listWatched") {
     return listWatchedSessionUpstreamLinksInDatabase(database.db);
@@ -479,11 +482,7 @@ export function executeSharedStateCommand(
   ) {
     return executeSessionDeliveryCommand(command, database);
   }
-  const writeOptions = {
-    database,
-    path: context.databasePath,
-    env: getSqliteWorkerStateContext().environment,
-  };
+  const writeOptions = databaseOptions();
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);
   }
