@@ -158,7 +158,7 @@ export type SqliteWorkerOpenCustody = Pick<
   "maintenanceScope" | "retainCleanup" | "createAdmission" | "stateDatabasePath" | "onNativeStopped"
 >;
 export type SqliteWorkerInputPreparation = {
-  assertCurrent(): void;
+  assertCurrent: () => void;
   /** Transfer to a dispatch that reaches enqueue synchronously, before returning its Promise. */
   handoff<T>(dispatch: () => Promise<T>): Promise<T>;
   release(): void;

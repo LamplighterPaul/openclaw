@@ -92,7 +92,9 @@ it("joins captured input before drainage returns and refuses stale handoff", asy
     expect.objectContaining({ code: "closed" }),
   );
   // This empty broker has only microtasks to settle before it waits for retained input.
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
   expect(closed).toBe(false);
   expect(() => prepared.assertCurrent()).toThrow(expect.objectContaining({ code: "closed" }));
   const dispatch = vi.fn(() => Promise.resolve());
