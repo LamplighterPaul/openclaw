@@ -667,7 +667,7 @@ async function inspectAdmittedOpenClawStateDatabase(
   },
 ): Promise<boolean | undefined> {
   try {
-    const store = await owner().open(context, true);
+    const store = await owner().open(context, { existingOnly: true });
     context.admission.assertCurrent();
     if (!store) {
       return undefined;
