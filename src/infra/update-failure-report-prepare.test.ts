@@ -35,7 +35,7 @@ describe("update report diagnostic command boundary", () => {
           durationMs: 1,
           steps: [
             {
-              name: "candidate doctor lint",
+              name: "post-plugin-doctor-lint",
               command: "doctor --lint --json",
               cwd: "/candidate",
               durationMs: 1,
@@ -53,6 +53,8 @@ describe("update report diagnostic command boundary", () => {
     expect(report.body).toContain("EACCES");
     expect(report.body).toContain("Permission denied");
     expect(report.body).not.toContain("private-customer-requirement");
+    expect(report.body).toContain("- Failed phase: post-plugin-doctor-lint\n");
+    expect(report.title).toMatch(/^Update failure: post-plugin-doctor-lint \(/u);
   });
 
   it.each([
