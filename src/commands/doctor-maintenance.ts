@@ -33,6 +33,10 @@ import {
 import { openDoctorStateSchemaReadAdmission } from "../state/openclaw-state-db-doctor-schema.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
+  assertDoctorAgentLeaseAdmission,
+  preflightExternalDoctorAgentLease,
+} from "./doctor-agent-lease-refusal.js";
+import {
   assertStaleDoctorGatewayStopped,
   doctorGatewayMaintenanceError,
   inspectStaleDoctorGateway,
@@ -69,21 +73,6 @@ function assertDoctorMaintenanceInspection(
   throw new Error(
     inspection.blockMessage ??
       `Gateway service ownership or shutdown could not be verified. Run ${formatCliCommand("openclaw gateway status --deep", env)} and stop it through its service owner before retrying.`,
-  );
-}
-
-function createDoctorAgentLeaseRefusal(env: NodeJS.ProcessEnv, cause?: unknown): UpdateDoctorError {
-  const message =
-    "Doctor could not enter maintenance. An agent database is in use. Stop other OpenClaw processes using this state, then retry the update.";
-  return new UpdateDoctorError(
-    message,
-    [
-      createUpdateFailureFact(
-        { check: "doctor", code: "agent-database-lease-active", message },
-        env,
-      ),
-    ],
-    { cause },
   );
 }
 
@@ -479,29 +468,7 @@ export async function beginDoctorMaintenance(params: {
     await settle(async () => {
       const externallyManaged = isServiceRepairExternallyManaged();
       if (externallyManaged) {
-        // An external parent may leave the serving Gateway running. Diagnose an
-        // active agent lease before that Gateway's lifecycle lock masks it.
-        // This negative-only observation grants no maintenance authority: both
-        // coordinators and the held-owner lease assertion remain mandatory.
-        const { readActiveOpenClawAgentDatabaseLeasesReadOnly } =
-          await import("../state/openclaw-agent-db-lease.js");
-        let activeAgentLease = false;
-        try {
-          activeAgentLease =
-            readActiveOpenClawAgentDatabaseLeasesReadOnly(
-              { env },
-              openDoctorStateSchemaReadAdmission,
-            ).length > 0;
-        } catch (error) {
-          if (hasCommandProcessCleanupError(error)) {
-            throw error;
-          }
-          // Diagnostic failure is not admission. The mandatory held-owner
-          // check below still classifies unreadable state and unknown errors.
-        }
-        if (activeAgentLease) {
-          throw createDoctorAgentLeaseRefusal(env);
-        }
+        await preflightExternalDoctorAgentLease(env);
       }
       if (
         params.root &&
@@ -662,28 +629,7 @@ export async function beginDoctorMaintenance(params: {
       // individual migrations acquire their own in-tree locks under this scope.
       // Gateway ownership lasts until that process stops, not for a short transaction.
       acquireMaintenanceResources();
-      const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
-        await import("../state/openclaw-agent-db-lease.js");
-      try {
-        assertNoOpenClawAgentDatabaseLeasesReadOnly({ env }, openDoctorStateSchemaReadAdmission);
-      } catch (error) {
-        if (error instanceof OpenClawAgentDatabaseLeaseActiveError) {
-          throw createDoctorAgentLeaseRefusal(env, error);
-        }
-        // Classify unreadable state under the held owners without opening a writer.
-        const { preflightOpenClawDatabaseSchemas } =
-          await import("../state/openclaw-database-preflight.js");
-        const schemas = await preflightOpenClawDatabaseSchemas({
-          env,
-          scope: "state",
-          openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
-        });
-        const unreadable = schemas.indeterminate.find((database) => database.kind === "state");
-        if (unreadable) {
-          throw new DoctorUnreadableStateDatabaseError(unreadable.path, unreadable.reason);
-        }
-        throw error;
-      }
+      await assertDoctorAgentLeaseAdmission(env);
       stopped?.windowsTaskAutoStartRecovery?.beginMutation();
       retainStoppedInstallation =
         stopped?.serviceUpdateVerdict?.kind === "owned" &&
