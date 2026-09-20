@@ -18,8 +18,12 @@ vi.mock("../session-utils.js", () => ({
   loadCombinedSessionStoreForGatewayCore: () => ({ store: seededSessions.store }),
 }));
 
+vi.mock("../../config/sessions/combined-store-gateway.js", () => ({
+  loadCombinedSessionStoreForGatewayCoreAsync: async () => ({ store: seededSessions.store }),
+}));
+
 vi.mock("../../projects/project-registry.js", () => ({
-  listProjectRegistry: () => [],
+  listProjectRegistry: async () => [],
   ProjectCheckoutError: class ProjectCheckoutError extends Error {},
   registerProjectRegistry: vi.fn(),
   removeProjectRegistry: vi.fn(),
@@ -59,7 +63,7 @@ function assertObservedProjectsPayload(
 
 async function listObservedProjects(params: {
   service: {
-    listRegistryRecords: () => unknown[];
+    listRegistryRecords: () => Promise<unknown[]>;
     resolveRepositoryIdentity: (checkoutPath: string) => Promise<{
       checkoutRoot: string;
       repoRoot: string;
@@ -71,11 +75,12 @@ async function listObservedProjects(params: {
 }) {
   const handlers = createProjectsHandlers(params.service as never);
   const responses: Parameters<RespondFn>[] = [];
+  const cfg = { agents: { list: [{ id: "main", default: true }] } };
   await handlers["projects.list"]?.({
     params: { includeObserved: true },
     respond: (...response: Parameters<RespondFn>) => responses.push(response),
     context: {
-      getRuntimeConfig: () => ({ agents: { list: [{ id: "main", default: true }] } }),
+      getRuntimeConfig: () => cfg,
     } as GatewayRequestContext,
     client: params.client ?? authenticatedClient("operator@example.com"),
   } as never);
@@ -124,7 +129,7 @@ describe("projects.list observed projects", () => {
 
       await expect(
         listObservedProjects({
-          service: { listRegistryRecords: () => [], resolveRepositoryIdentity },
+          service: { listRegistryRecords: async () => [], resolveRepositoryIdentity },
           client: authenticatedClient(`${scope}@example.com`, [scope]),
         }),
       ).resolves.toEqual([
@@ -148,13 +153,13 @@ describe("projects.list observed projects", () => {
         sessionId: "visible",
         updatedAt: 200,
         visibility: "shared",
-        createdActor: { type: "human", id: "owner@example.com" },
+        createdActor: { type: "human", source: "profile", id: "owner@example.com" },
       },
       "agent:main:private": {
         sessionId: "private",
         updatedAt: 300,
         visibility: "draft",
-        createdActor: { type: "human", id: "owner@example.com" },
+        createdActor: { type: "human", source: "profile", id: "owner@example.com" },
       },
     };
     const worktree = (name: string, ownerId: string, lastActiveAt: number) => ({
@@ -186,7 +191,7 @@ describe("projects.list observed projects", () => {
       originUrl: `https://example.test${checkoutPath}.git`,
       fingerprint: checkoutPath,
     }));
-    const service = { listRegistryRecords: () => worktrees, resolveRepositoryIdentity };
+    const service = { listRegistryRecords: async () => worktrees, resolveRepositoryIdentity };
 
     const viewer = (await listObservedProjects({
       service,
@@ -224,7 +229,7 @@ describe("projects.list observed projects", () => {
 
     const projects = (await listObservedProjects({
       service: {
-        listRegistryRecords: () => [],
+        listRegistryRecords: async () => [],
         resolveRepositoryIdentity: async (checkoutPath: string) => ({
           checkoutRoot: checkoutPath,
           repoRoot: checkoutPath,
@@ -261,7 +266,7 @@ describe("projects.list observed projects", () => {
 
     const projects = (await listObservedProjects({
       service: {
-        listRegistryRecords: () => worktrees,
+        listRegistryRecords: async () => worktrees,
         resolveRepositoryIdentity: async (checkoutPath: string) => ({
           checkoutRoot: checkoutPath,
           repoRoot: checkoutPath,
@@ -297,7 +302,7 @@ describe("projects.list observed projects", () => {
 
     await expect(
       listObservedProjects({
-        service: { listRegistryRecords: () => [], resolveRepositoryIdentity },
+        service: { listRegistryRecords: async () => [], resolveRepositoryIdentity },
       }),
     ).resolves.toEqual([]);
     expect(resolveRepositoryIdentity).toHaveBeenCalledTimes(PROJECTS_LIST_MAX_IDENTITY_PROBES);

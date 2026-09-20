@@ -12,6 +12,7 @@ import {
   type SqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
 import { VERSION } from "../version.js";
+import { OPENCLAW_DATABASE_SCHEMA_DOCS_URL } from "./openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqliteDir } from "./openclaw-state-db.paths.js";
 
 const OPENCLAW_QUARANTINE_SCHEMA_VERSION = 2;
@@ -26,6 +27,29 @@ type OpenClawDatabaseQuarantine = {
   quarantinedAt: number;
   reason: string;
 };
+
+/** Reading quarantine metadata is best effort; unfinished native cleanup is a separate fact. */
+export class OpenClawQuarantineReadCleanupError extends AggregateError {
+  constructor(errors: unknown[]) {
+    super(errors, "OpenClaw quarantine reader cleanup failed.", { cause: errors[0] });
+    this.name = "OpenClawQuarantineReadCleanupError";
+  }
+}
+
+// Read admission needs this error without importing schema migrations.
+export function createOpenClawDatabaseVerificationError(
+  kind: "agent" | "state",
+  pathname: string,
+  storedError: string | null,
+): Error {
+  // Doctor's clearing hooks run after a full integrity assertion, so a still-
+  // corrupt file cannot be cleared directly: the file must be healthy first.
+  const error = new Error(
+    `OpenClaw ${kind} database ${pathname} is quarantined after integrity verification failed: ${storedError ?? "unknown integrity error"}. Restore the database from a backup or repair it, then run openclaw doctor --fix to clear the quarantine. See ${OPENCLAW_DATABASE_SCHEMA_DOCS_URL}.`,
+  );
+  error.name = "SqliteIntegrityError";
+  return error;
+}
 
 function resolveQuarantineStorePath(env: NodeJS.ProcessEnv): string {
   return path.join(resolveOpenClawStateSqliteDir(env), "openclaw-quarantine.sqlite");
@@ -120,64 +144,112 @@ export function readOpenClawDatabaseQuarantine(
     return undefined;
   }
   const database = openNodeSqliteDatabase(storePath);
+  let outcome: { value: OpenClawDatabaseQuarantine | undefined } | { error: unknown };
   try {
-    database.exec(`PRAGMA busy_timeout = ${OPENCLAW_QUARANTINE_BUSY_TIMEOUT_MS};`);
-    const userVersion = readQuarantineSchemaVersion(database, storePath);
-    if (userVersion === 0) {
-      return undefined;
-    }
-    if (userVersion > OPENCLAW_QUARANTINE_SCHEMA_VERSION) {
-      throw new Error(
-        `OpenClaw quarantine store ${storePath} uses newer schema version ${userVersion}.`,
+    outcome = { value: readQuarantineDecision(database, pathname, storePath) };
+  } catch (error) {
+    outcome = { error };
+  }
+  try {
+    database.close();
+  } catch (closeError) {
+    throw new OpenClawQuarantineReadCleanupError(
+      "error" in outcome ? [outcome.error, closeError] : [closeError],
+    );
+  }
+  if ("error" in outcome) {
+    throw outcome.error;
+  }
+  return outcome.value;
+}
+
+/** Reject a known state quarantine while retaining best-effort metadata admission. */
+export function assertOpenClawStateDatabaseNotQuarantined(
+  pathname: string,
+  env: NodeJS.ProcessEnv,
+  onNativeCleanupFailure?: (error: OpenClawQuarantineReadCleanupError) => void,
+): void {
+  let quarantineFailure: Error | undefined;
+  try {
+    const quarantine = readOpenClawDatabaseQuarantine(pathname, { env });
+    if (quarantine) {
+      quarantineFailure = createOpenClawDatabaseVerificationError(
+        "state",
+        pathname,
+        quarantine.reason,
       );
     }
-    const generationColumn = userVersion >= 2 ? ", verified_generation" : "";
-    const row = database
-      .prepare(
-        `SELECT kind, reason, quarantined_at${generationColumn} FROM quarantined_databases WHERE path = ? LIMIT 1`,
-      )
-      .get(path.resolve(pathname)) as
-      | {
-          kind?: unknown;
-          quarantined_at?: unknown;
-          reason?: unknown;
-          verified_generation?: unknown;
-        }
-      | undefined;
-    if (!row) {
-      return undefined;
+  } catch (error) {
+    // A broken quarantine store must not brick every state read.
+    // The process latch and daily verifier still cover known damage.
+    if (error instanceof OpenClawQuarantineReadCleanupError) {
+      onNativeCleanupFailure?.(error);
     }
-    if (
-      (row.kind !== "agent" && row.kind !== "state") ||
-      typeof row.reason !== "string" ||
-      typeof row.quarantined_at !== "number" ||
-      !Number.isInteger(row.quarantined_at) ||
-      (row.verified_generation !== undefined &&
-        row.verified_generation !== null &&
-        typeof row.verified_generation !== "string")
-    ) {
+  }
+  if (quarantineFailure) {
+    throw quarantineFailure;
+  }
+}
+
+function readQuarantineDecision(
+  database: DatabaseSync,
+  pathname: string,
+  storePath: string,
+): OpenClawDatabaseQuarantine | undefined {
+  database.exec(`PRAGMA busy_timeout = ${OPENCLAW_QUARANTINE_BUSY_TIMEOUT_MS};`);
+  const userVersion = readQuarantineSchemaVersion(database, storePath);
+  if (userVersion === 0) {
+    return undefined;
+  }
+  if (userVersion > OPENCLAW_QUARANTINE_SCHEMA_VERSION) {
+    throw new Error(
+      `OpenClaw quarantine store ${storePath} uses newer schema version ${userVersion}.`,
+    );
+  }
+  const generationColumn = userVersion >= 2 ? ", verified_generation" : "";
+  const row = database
+    .prepare(
+      `SELECT kind, reason, quarantined_at${generationColumn} FROM quarantined_databases WHERE path = ? LIMIT 1`,
+    )
+    .get(path.resolve(pathname)) as
+    | {
+        kind?: unknown;
+        quarantined_at?: unknown;
+        reason?: unknown;
+        verified_generation?: unknown;
+      }
+    | undefined;
+  if (!row) {
+    return undefined;
+  }
+  if (
+    (row.kind !== "agent" && row.kind !== "state") ||
+    typeof row.reason !== "string" ||
+    typeof row.quarantined_at !== "number" ||
+    !Number.isInteger(row.quarantined_at) ||
+    (row.verified_generation !== undefined &&
+      row.verified_generation !== null &&
+      typeof row.verified_generation !== "string")
+  ) {
+    throw new Error(`OpenClaw quarantine store ${storePath} contains an invalid row.`);
+  }
+  if (typeof row.verified_generation === "string") {
+    let verifiedGeneration: SqliteFileGeneration;
+    try {
+      verifiedGeneration = parseSqliteFileGeneration(row.verified_generation);
+    } catch {
       throw new Error(`OpenClaw quarantine store ${storePath} contains an invalid row.`);
     }
-    if (typeof row.verified_generation === "string") {
-      let verifiedGeneration: SqliteFileGeneration;
-      try {
-        verifiedGeneration = parseSqliteFileGeneration(row.verified_generation);
-      } catch {
-        throw new Error(`OpenClaw quarantine store ${storePath} contains an invalid row.`);
-      }
-      try {
-        const currentGeneration = readStableSqliteFileGeneration(path.resolve(pathname));
-        if (!sameSqliteFileGeneration(verifiedGeneration, currentGeneration)) {
-          return undefined;
-        }
-      } catch {
+    try {
+      const currentGeneration = readStableSqliteFileGeneration(path.resolve(pathname));
+      if (!sameSqliteFileGeneration(verifiedGeneration, currentGeneration)) {
         return undefined;
       }
+    } catch {
+      return undefined;
     }
-    return { kind: row.kind, quarantinedAt: row.quarantined_at, reason: row.reason };
-  } finally {
-    database.close();
   }
+  return { kind: row.kind, quarantinedAt: row.quarantined_at, reason: row.reason };
 }
 
 /** Persist one authoritative quarantine decision. */

@@ -1,7 +1,6 @@
 // Xai tests cover responses tool shared plugin behavior.
 import { describe, expect, it } from "vitest";
 import {
-  extractXaiWebSearchContent,
   requireXaiResponseTextAndCitations,
   requireXaiResponseTextCitationsAndInline,
 } from "./responses-tool-shared.js";
@@ -77,47 +76,79 @@ describe("xai responses tool helpers", () => {
 
   it("ignores malformed output, content, and annotation entries", () => {
     expect(
-      extractXaiWebSearchContent({
-        output: [
-          null,
-          {
-            type: "message",
-            content: [
-              null,
-              {
-                type: "output_text",
-                text: "Found it",
-                annotations: [
-                  null,
-                  { type: "url_citation", url: "https://example.com/a" },
-                  { type: "url_citation", url: "https://example.com/a" },
-                  { type: "url_citation" },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    ).toEqual({
-      text: "Found it",
-      annotationCitations: ["https://example.com/a"],
-    });
-  });
-
-  it("prefers explicit top-level citations when present", () => {
-    expect(
       requireXaiResponseTextAndCitations(
         {
-          output_text: "Done",
-          citations: ["https://example.com/b"],
+          output: [
+            null,
+            {
+              type: "message",
+              content: [
+                null,
+                {
+                  type: "output_text",
+                  text: "Found it",
+                  annotations: [
+                    null,
+                    { type: "url_citation", url: "https://example.com/a" },
+                    { type: "url_citation", url: "https://example.com/a" },
+                    { type: "url_citation" },
+                  ],
+                },
+              ],
+            },
+          ],
         },
         "xAI tool failed",
       ),
     ).toEqual({
-      content: "Done",
-      citations: ["https://example.com/b"],
+      content: "Found it",
+      citations: ["https://example.com/a"],
     });
   });
+
+  it.each([
+    { name: "absent", citations: undefined, expected: ["https://example.com/annotation"] },
+    { name: "empty", citations: [], expected: ["https://example.com/annotation"] },
+    {
+      name: "invalid",
+      citations: ["not a URL", "javascript:alert(1)"],
+      expected: ["https://example.com/annotation"],
+    },
+    {
+      name: "valid, ordered, and deduplicated",
+      citations: [
+        "not a URL",
+        "https://example.com/b",
+        "https://example.com/b",
+        "https://example.com/a",
+      ],
+      expected: ["https://example.com/b", "https://example.com/a"],
+    },
+    {
+      name: "valid only beyond scan limit",
+      citations: [...Array<string>(1_000).fill("not a URL"), "https://example.com/b"],
+      expected: ["https://example.com/annotation"],
+    },
+  ])(
+    "selects valid explicit citations or retained annotations: $name",
+    ({ citations, expected }) => {
+      expect(
+        requireXaiResponseTextAndCitations(
+          {
+            output: [
+              {
+                type: "output_text",
+                text: "Done",
+                annotations: [{ type: "url_citation", url: "https://example.com/annotation" }],
+              },
+            ],
+            citations,
+          },
+          "xAI tool failed",
+        ),
+      ).toEqual({ content: "Done", citations: expected });
+    },
+  );
 
   it("rejects hostile citation URLs and preserves the first 20 distinct valid sources", () => {
     const annotations = Array.from({ length: 150_000 }, () => ({
@@ -371,9 +402,15 @@ describe("xai responses tool helpers", () => {
     });
   });
 
-  it("rejects successful Responses tool payloads without answer text", () => {
-    expect(() => requireXaiResponseTextAndCitations({}, "xAI tool failed")).toThrow(
-      "xAI tool failed: malformed JSON response",
+  it.each([
+    {},
+    { output: [] },
+    { output_text: "" },
+    { output: [{ type: "code_interpreter_call" }] },
+    { output: [{ type: "message", content: [{ type: "output_text", text: "" }] }] },
+  ])("reports missing answer text without blaming JSON decoding: %j", (data) => {
+    expect(() => requireXaiResponseTextAndCitations(data, "xAI tool failed")).toThrow(
+      "xAI tool failed: no answer text returned; try a simpler request",
     );
   });
 });

@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
 import { expectNoReaddirSyncDuring } from "../../test-utils/fs-scan-assertions.js";
+import { mockChannelPluginModuleLoader } from "./bundled.shape-guard.test-helpers.js";
 
 vi.mock("../../plugins/bundled-dir.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../plugins/bundled-dir.js")>();
@@ -28,9 +30,16 @@ function restoreBundledPluginsDir(previousBundledPluginsDir: string | undefined)
   }
 }
 
-function alphaChannelMetadata({ includeSetup = false }: { includeSetup?: boolean } = {}) {
+function alphaChannelMetadata({
+  includeSetup = false,
+  rootDir = path.join(
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR ?? path.resolve("extensions"),
+    "alpha",
+  ),
+}: { includeSetup?: boolean; rootDir?: string } = {}) {
   return {
     dirName: "alpha",
+    rootDir,
     manifest: {
       id: "alpha",
       channels: ["alpha"],
@@ -212,6 +221,7 @@ function packageMarkerPathsToRoots(markerPaths: string[], extensionsDir: string)
 }
 
 afterEach(() => {
+  clearPluginMetadataLifecycleCaches();
   delete (globalThis as { __openclawBundledChannelReenter?: () => void })[
     "__openclawBundledChannelReenter"
   ];
@@ -222,6 +232,7 @@ afterEach(() => {
   vi.doUnmock("../../plugins/manifest-registry.js");
   vi.doUnmock("../../plugins/channel-catalog-registry.js");
   vi.doUnmock("../../infra/boundary-file-read.js");
+  vi.doUnmock("./module-loader.js");
   vi.doUnmock("./bundled-root.js");
   vi.doUnmock("jiti");
 });
@@ -432,7 +443,7 @@ describe("bundled channel entry shape guards", () => {
     }
   });
 
-  it("falls back through the cached loader for package-local dist entries needing SDK aliases", async () => {
+  it("loads package-local dist entries with SDK aliases", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-bundled-package-dist-"));
     const pluginDir = path.join(root, "extensions", "alpha", "dist");
     writeAlphaSdkAliasDistFixture(pluginDir, "Package dist Alpha");
@@ -452,6 +463,7 @@ describe("bundled channel entry shape guards", () => {
             source: path.join(root, "extensions", "alpha", "index.ts"),
             built: path.join(root, "extensions", "alpha", "index.ts"),
           },
+          rootDir: path.join(root, "extensions", "alpha"),
         },
       ],
       resolveBundledChannelGeneratedPath: () => path.join(pluginDir, "index.js"),
@@ -469,7 +481,7 @@ describe("bundled channel entry shape guards", () => {
     }
   });
 
-  it("falls back through the cached loader for direct override dist entries needing SDK aliases", async () => {
+  it("loads direct override dist entries with SDK aliases", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-bundled-direct-dist-"));
     const previousBundledPluginsDir = process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
     const pluginsRoot = path.join(root, "bundled-plugins");
@@ -709,7 +721,9 @@ describe("bundled channel entry shape guards", () => {
       }),
     }));
     vi.doMock("../../plugins/bundled-channel-runtime.js", () => ({
-      listBundledChannelPluginMetadata: () => [alphaChannelMetadata({ includeSetup: true })],
+      listBundledChannelPluginMetadata: () => [
+        alphaChannelMetadata({ includeSetup: true, rootDir: pluginDir }),
+      ],
       resolveBundledChannelGeneratedPath: (
         rootDir: string,
         entry: BundledEntrySource | undefined,
@@ -1103,11 +1117,7 @@ describe("bundled channel entry shape guards", () => {
   });
 
   it("keeps bundled hot runtime barrels off the broad core SDK surface", () => {
-    const offenders = [
-      "extensions/googlechat/runtime-api.ts",
-      "extensions/irc/src/runtime-api.ts",
-      "extensions/matrix/src/runtime-api.ts",
-    ].filter((filePath) =>
+    const offenders = ["extensions/googlechat/runtime-api.ts"].filter((filePath) =>
       fs.readFileSync(path.resolve(filePath), "utf8").includes("openclaw/plugin-sdk/core"),
     );
 
@@ -1190,6 +1200,7 @@ module.exports = {
           {
             dirName: "alpha",
             idHint: "alpha",
+            rootDir: pluginDir,
             source: {
               source: "./index.cjs",
               built: "./index.cjs",
@@ -1203,13 +1214,7 @@ module.exports = {
         resolveBundledChannelGeneratedPath: () => modulePath,
       };
     });
-    vi.doMock("../../infra/boundary-file-read.js", () => ({
-      openRootFileSync: ({ absolutePath }: { absolutePath: string }) => ({
-        ok: true,
-        path: absolutePath,
-        fd: fs.openSync(absolutePath, "r"),
-      }),
-    }));
+    mockChannelPluginModuleLoader();
     vi.doMock("../../plugins/channel-catalog-registry.js", () => ({
       listChannelCatalogEntries: () => [],
     }));

@@ -1,8 +1,15 @@
 import { isGatewayLoopbackHost } from "../../packages/gateway-client/src/websocket-transport.js";
+import { WORKER_LINEAGE_START_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { createChildAdapter } from "../process/supervisor/adapters/child.js";
+import { supportsNodeWorkerProcessOwner } from "../process/supervisor/service-child-protocol.js";
+import { createServiceChildRelayAdapter } from "../process/supervisor/service-child-relay-host.js";
 import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
 import { parseNodeWorkerConnectionFailureMessage } from "../worker/node-supervisor-protocol.js";
-import { formatWorkerConnectionFailure } from "../worker/worker-connection-contract.js";
+import {
+  buildWorkerProcessTurn,
+  serializeWorkerProcessInput,
+  type WorkerProcessInput,
+} from "../worker/worker-process-protocol.js";
 import {
   buildNodeWorkerContainerStartArgv,
   createNodeWorkerContainer,
@@ -10,6 +17,7 @@ import {
 } from "./node-worker-container-engine.js";
 import type { NodeWorkerContainerLifecycle } from "./node-worker-container-lifecycle.js";
 import { resolveNodeWorkerEntry } from "./node-worker-entry.js";
+import type { NodeWorkerCleanupMode } from "./node-worker-launch-receipt.js";
 import type {
   NodeWorkerContainerIdentity,
   NodeWorkerLaunchReceipt,
@@ -19,9 +27,12 @@ import {
   sanitizeNodeWorkerDiagnostic,
   type NodeWorkerCredentialScrubber,
 } from "./node-worker-output.js";
+import type { NodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
 import type { NodeWorkerLaunchInput } from "./node-worker-supervisor-contract.js";
 
-export type NodeWorkerChildAdapter = Awaited<ReturnType<typeof createChildAdapter>>;
+export type NodeWorkerChildAdapter = Awaited<ReturnType<typeof createChildAdapter>>["adapter"] & {
+  confirmExtinction?: () => boolean;
+};
 
 type NodeWorkerLaunchTransportOptions = {
   bundleRoot: string;
@@ -29,6 +40,8 @@ type NodeWorkerLaunchTransportOptions = {
   engineEnv: NodeJS.ProcessEnv;
   input: NodeWorkerLaunchInput;
   descriptor: WorkerLaunchDescriptor;
+  planHash: string;
+  supervisor: NodeWorkerProcessIdentity;
   connectionFailure: { errorText?: string };
   scrubber: NodeWorkerCredentialScrubber;
   store: NodeWorkerLaunchStore;
@@ -42,6 +55,7 @@ type NodeWorkerLaunchTransport =
   | {
       kind: "started";
       adapter: NodeWorkerChildAdapter;
+      cleanupMode: NodeWorkerCleanupMode | null;
       container?: NodeWorkerContainerIdentity;
     };
 
@@ -55,32 +69,53 @@ export async function prepareNodeWorkerLaunchTransport(
     gatewayNamespace: options.input.gatewayNamespace,
   });
   if (!options.containerEngine) {
-    return {
-      kind: "started",
-      adapter: await createChildAdapter({
-        argv: [process.execPath, entry, "--internal-worker-ipc"],
-        env: options.workerEnv,
-        exactEnv: true,
-        ownedWorker: true,
-        onWorkerMessage: (message) => {
-          const diagnostic = parseNodeWorkerConnectionFailureMessage(message);
-          if (!diagnostic) {
-            return;
-          }
-          options.connectionFailure.errorText = diagnostic.cause
-            ? formatWorkerConnectionFailure(
-                options.descriptor.connectionEndpoint,
-                sanitizeNodeWorkerDiagnostic(
-                  diagnostic.cause,
-                  "node worker gateway connection failed",
-                  options.scrubber.scrub,
-                ),
-              )
-            : undefined;
-        },
-        input: JSON.stringify(options.descriptor),
-      }),
-    };
+    const args = [entry, "--internal-worker-ipc", "--internal-worker-session"];
+    const workerOptions = {
+      env: options.workerEnv,
+      ownedWorker: true,
+      stdinMode: "pipe-open",
+      onWorkerMessage: (message: unknown) => {
+        const diagnostic = parseNodeWorkerConnectionFailureMessage(message);
+        if (!diagnostic) {
+          return;
+        }
+        options.connectionFailure.errorText = diagnostic.cause
+          ? sanitizeNodeWorkerDiagnostic(
+              diagnostic.cause,
+              "node worker gateway connection failed",
+              options.scrubber.scrub,
+            )
+          : undefined;
+      },
+    } as const;
+    // Released v2026.9.4 workers require type-only IPC and must lead their own process group.
+    if (
+      supportsNodeWorkerProcessOwner() &&
+      options.descriptor.admission.handshake.protocolFeatures.includes(
+        WORKER_LINEAGE_START_PROTOCOL_FEATURE,
+      )
+    ) {
+      const { adapter, ready } = await createServiceChildRelayAdapter({
+        ...workerOptions,
+        cleanupBinding: options.store.cleanupBinding({
+          launchId: options.input.launchId,
+          planHash: options.planHash,
+          supervisor: options.supervisor,
+        }),
+        command: process.execPath,
+        args,
+        oomScoreWrapperSelected: false,
+      });
+      await ready;
+      return { kind: "started", adapter, cleanupMode: "owned-anchor" };
+    }
+    const { adapter, ready } = await createChildAdapter({
+      ...workerOptions,
+      argv: [process.execPath, ...args],
+      exactEnv: true,
+    });
+    await ready;
+    return { kind: "started", adapter, cleanupMode: "process-group" };
   }
 
   const endpoint = options.descriptor.connectionEndpoint;
@@ -121,13 +156,14 @@ export async function prepareNodeWorkerLaunchTransport(
       }
       return { kind: "terminal", receipt: claimed };
     }
-    const adapter = await createChildAdapter({
+    const { adapter, ready } = await createChildAdapter({
       argv: buildNodeWorkerContainerStartArgv(options.containerEngine, container.containerId),
       env: options.containerEngine.env ?? options.engineEnv,
       exactEnv: true,
       stdinMode: "pipe-open",
     });
-    return { kind: "started", adapter, container };
+    await ready;
+    return { kind: "started", adapter, container, cleanupMode: null };
   } catch (error) {
     if (container) {
       await lifecycle.remove(container, options.input);
@@ -136,27 +172,40 @@ export async function prepareNodeWorkerLaunchTransport(
   }
 }
 
-/** Plain stdio workers cannot run until their journaled descriptor reaches EOF. */
+/** Both transports admit turns only after the physical owner has been journaled. */
 export async function startNodeWorkerLaunchTransport(params: {
   adapter: NodeWorkerChildAdapter;
   descriptor: WorkerLaunchDescriptor;
   container?: NodeWorkerContainerIdentity;
+  isCurrent: () => boolean;
 }): Promise<void> {
+  if (!params.isCurrent()) {
+    throw new Error("node worker admission closed before startup");
+  }
   if (!params.container) {
     await params.adapter.openStartGate?.();
-    return;
   }
-  const stdin = params.adapter.stdin;
+  if (!params.isCurrent()) {
+    throw new Error("node worker admission closed before descriptor dispatch");
+  }
+  await sendNodeWorkerInput(params.adapter, buildWorkerProcessTurn(params.descriptor));
+}
+
+export async function sendNodeWorkerInput(
+  adapter: NodeWorkerChildAdapter,
+  message: WorkerProcessInput,
+): Promise<void> {
+  const stdin = adapter.stdin;
   if (!stdin) {
-    throw new Error("node worker container launch did not provide a writable stdin pipe");
+    throw new Error("node worker did not provide a writable stdin pipe");
   }
+  const encoded = serializeWorkerProcessInput(message);
   await new Promise<void>((resolve, reject) => {
-    stdin.write(JSON.stringify(params.descriptor), (error) => {
+    stdin.write(encoded, (error) => {
       if (error) {
         reject(error);
         return;
       }
-      stdin.end();
       resolve();
     });
   });

@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 340388,
-  "reason": "rebase onto current main; startup growth landed on main since the boot-group ratchet",
-  "updatedAt": "2026-08-24"
+  "startupJsGzipBytes": 364198,
+  "reason": "Peter approved the measured 364198 B startup gzip baseline and 356 KiB cap for #152510 on 2026-09-19: ancestor-session snapshot reuse is 215 B above the previous enforced budget. The existing 512 B growth and 64 B build-variance allowances are unchanged.",
+  "updatedAt": "2026-09-20"
 }
