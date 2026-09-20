@@ -191,14 +191,20 @@ function prepareSnapshotRemoval(directory: string): string[] {
   }
   // Keep every token until all copied data is gone. A partial recursive rm must
   // not leave a large modern snapshot whose lifetime can no longer be verified.
-  return fs
-    .readdirSync(directory, { recursive: true, withFileTypes: true })
-    .filter(
-      (entry) =>
-        !entry.isDirectory() && !SQLITE_SNAPSHOT_CONTROL_FILES.some((file) => file === entry.name),
-    )
-    .map((entry) => path.join(entry.parentPath, entry.name))
-    .concat(directory);
+  const files: string[] = [];
+  const directories = [directory];
+  // Recursive readdir follows directory symlinks, including captured plugins' host links.
+  for (const current of directories) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const filename = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        directories.push(filename);
+      } else if (!SQLITE_SNAPSHOT_CONTROL_FILES.some((file) => file === entry.name)) {
+        files.push(filename);
+      }
+    }
+  }
+  return files.concat(directory);
 }
 
 export function removeTempDirectory(

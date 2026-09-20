@@ -34,6 +34,27 @@ function fixture(strict: boolean) {
 
 describe("prepared SQLite snapshot cleanup", () => {
   it.each([false, true])(
+    "removes directory links without traversing their retained targets (async: %s)",
+    async (asynchronous) => {
+      const { ownedRoot, prepared } = fixture(false);
+      const host = tempDirs.make("sqlite-cleanup-linked-host-");
+      const retained = path.join(host, "retained.txt");
+      fs.writeFileSync(retained, "host data outside the snapshot");
+      fs.writeFileSync(path.join(ownedRoot, "owner.sqlite"), "");
+      const modules = path.join(ownedRoot, "snapshot-child", "node_modules");
+      fs.mkdirSync(modules);
+      for (const name of ["openclaw", "owner.sqlite"]) {
+        fs.symlinkSync(host, path.join(modules, name), "junction");
+      }
+
+      expect(asynchronous ? await prepared.cleanupAsync() : prepared.cleanup()).toBe(true);
+      expect(fs.existsSync(ownedRoot)).toBe(false);
+      expect(fs.readFileSync(retained, "utf8")).toBe("host data outside the snapshot");
+      expect(fs.readdirSync(host)).toEqual(["retained.txt"]);
+    },
+  );
+
+  it.each([false, true])(
     "retains cancelled orphan cleanup for retry (strict: %s)",
     async (strict) => {
       const { ownedRoot, sibling, prepared } = fixture(strict);
