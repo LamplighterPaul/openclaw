@@ -1,5 +1,7 @@
-// Restored 2026.9.4/2026.9.5 readers recognize fetch outcomes by these ledger keys.
-const FETCH_STEP_KEYS = new Map<string, string>([
+// Restored readers join ledger and sentinel diagnostics using these released keys.
+const RELEASED_STEP_KEYS = new Map<string, string>([
+  ["package-install", "global update"],
+  ["package-install-omit-optional", "global update (omit optional)"],
   ["git-fetch", "git fetch"],
   ["git-fetch-tags", "git fetch tags"],
   ["git-fetch-target-tag", "git fetch target tag"],
@@ -8,5 +10,5 @@ const FETCH_STEP_KEYS = new Map<string, string>([
 ]);
 
 export function updateRunStepKey(step: string): string {
-  return FETCH_STEP_KEYS.get(step) ?? step;
+  return RELEASED_STEP_KEYS.get(step) ?? step;
 }

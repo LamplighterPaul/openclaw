@@ -316,6 +316,7 @@ describe("package update recovery safety", () => {
           runCommand: createRootRunner(globalRoot),
           timeoutMs: 1000,
           runStep: async ({ name, argv }) => {
+            const fallback = argv.includes("--omit=optional");
             const stagePrefix = argv[argv.indexOf("--prefix") + 1];
             if (!stagePrefix) {
               throw new Error("missing stage prefix");
@@ -340,11 +341,10 @@ describe("package update recovery safety", () => {
               command: argv.join(" "),
               cwd: stagePrefix,
               durationMs: 0,
-              exitCode:
-                outcome === "fallback install timed out" && name === "global update" ? 1 : 0,
+              exitCode: outcome === "fallback install timed out" && !fallback ? 1 : 0,
               termination:
                 outcome === "install timed out" ||
-                (outcome === "fallback install timed out" && name !== "global update")
+                (outcome === "fallback install timed out" && fallback)
                   ? "timeout"
                   : "exit",
               killed: outcome === "install killed",
@@ -435,8 +435,8 @@ describe("package update recovery safety", () => {
           expect(result.failedStep).toMatchObject({
             name: failedInstall
               ? outcome === "fallback install timed out"
-                ? "global update (omit optional)"
-                : "global update"
+                ? "package-install-omit-optional"
+                : "package-install"
               : "candidate canary",
             exitCode: outcome === "validation rejected" ? 1 : 0,
           });
