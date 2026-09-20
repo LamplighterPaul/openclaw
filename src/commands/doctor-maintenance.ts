@@ -42,6 +42,7 @@ import {
 import type { DoctorOptions } from "./doctor-prompter.js";
 import { isDoctorUpdateRepairMode, resolveDoctorRepairMode } from "./doctor-repair-mode.js";
 import {
+  assertDoctorMaintenanceInspection,
   assertDoctorServiceSelection,
   isServiceRepairExternallyManaged,
   resolveUpdateParentGatewayActivation,
@@ -51,27 +52,6 @@ import {
   recordUpdateDoctorRefusal,
   resolveUpdateDoctorGitRecovery,
 } from "./doctor-update-refusal.js";
-
-function assertDoctorMaintenanceInspection(
-  inspection: PreManagedServiceStop,
-  env: NodeJS.ProcessEnv,
-): void {
-  const kind = inspection.serviceUpdateVerdict?.kind;
-  // Unavailable inspection grants no service authority. The state coordinators
-  // and agent leases below still exclude live writers before repair.
-  if (
-    !inspection.blockMessage &&
-    (kind === "unavailable" ||
-      (inspection.inspected &&
-        (kind === "owned" || kind === "absent" || inspection.offline === true)))
-  ) {
-    return;
-  }
-  throw new Error(
-    inspection.blockMessage ??
-      `Gateway service ownership or shutdown could not be verified. Run ${formatCliCommand("openclaw gateway status --deep", env)} and stop it through its service owner before retrying.`,
-  );
-}
 
 export async function beginDoctorMaintenance(params: {
   options: DoctorOptions;

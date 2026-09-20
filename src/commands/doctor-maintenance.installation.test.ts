@@ -25,6 +25,7 @@ import { createDoctorPrompter } from "./doctor-prompter.js";
 
 const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
+  resident: vi.fn<() => { pid: number } | undefined>(),
   activeRoot: "",
   runtimeDirectory: "",
   installPlanBuilt: false,
@@ -35,6 +36,23 @@ const mocks = vi.hoisted(() => ({
   suspend: vi.fn<typeof import("../daemon/schtasks.js").suspendScheduledTaskAutoStartForUpdate>(),
   resume: vi.fn<typeof import("../daemon/schtasks.js").resumeScheduledTaskAutoStartAfterUpdate>(),
 }));
+vi.mock("../gateway/call.js", async (original) => {
+  const { gatewayMaintenanceResponse } = await import("../gateway/health-response.test-support.js");
+  return {
+    ...(await original<typeof import("../gateway/call.js")>()),
+    callGatewayCli: gatewayMaintenanceResponse(() => mocks.resident()),
+  };
+});
+
+vi.mock("../daemon/systemd-exec.js", async (original) => {
+  const { gatewayMaintenanceSystemdShow } =
+    await import("../gateway/health-response.test-support.js");
+  return {
+    ...(await original<typeof import("../daemon/systemd-exec.js")>()),
+    execSystemctlUser: gatewayMaintenanceSystemdShow,
+  };
+});
+
 vi.mock("@clack/prompts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@clack/prompts")>()),
   confirm: mocks.confirm,
@@ -112,6 +130,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.resident.mockReset();
   mocks.audit.mockResolvedValue({ ok: true, issues: [] });
   mocks.installPlanBuilt = false;
   for (const native of [mocks.suspend, mocks.resume]) {
@@ -241,6 +260,8 @@ async function runInstallationCase(params: {
       };
       const originalCommand = structuredClone(command);
       let running = !initiallyStopped;
+      const pid = 4200;
+      mocks.resident.mockImplementation(() => (running ? { pid } : undefined));
       let nativeInspectionReads = 0;
       let inspectionClock = 0;
       let inspectingRuntime = false;
@@ -299,7 +320,11 @@ async function runInstallationCase(params: {
               }
             }
           }
-          return { status: running ? "running" : "stopped", systemd: { managerUid: 2001 } };
+          return {
+            status: running ? "running" : "stopped",
+            ...(running ? { pid } : {}),
+            systemd: { managerUid: 2001 },
+          };
         },
         stop: async () => {
           events.push("stop");

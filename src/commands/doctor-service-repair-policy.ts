@@ -1,4 +1,6 @@
 /** Doctor policy for native gateway service ownership and repair. */
+import { formatCliCommand } from "../cli/command-format.js";
+import type { PreManagedServiceStop } from "../cli/update-cli/update-command-service-maintenance.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { isContainerEnvironment } from "../infra/container-environment.js";
@@ -17,6 +19,27 @@ export const SERVICE_REPAIR_POLICY_ENV = "OPENCLAW_SERVICE_REPAIR_POLICY";
 
 const EXTERNAL_SERVICE_REPAIR_NOTE =
   "Gateway service is managed externally; skipped service install/start repair. Start or repair the gateway through your supervisor.";
+
+export function assertDoctorMaintenanceInspection(
+  inspection: PreManagedServiceStop,
+  env: NodeJS.ProcessEnv,
+): void {
+  const kind = inspection.serviceUpdateVerdict?.kind;
+  // Unavailable inspection grants no service authority. The state coordinators
+  // and agent leases below still exclude live writers before repair.
+  if (
+    !inspection.blockMessage &&
+    (kind === "unavailable" ||
+      (inspection.inspected &&
+        (kind === "owned" || kind === "absent" || inspection.offline === true)))
+  ) {
+    return;
+  }
+  throw new Error(
+    inspection.blockMessage ??
+      `Gateway service ownership or shutdown could not be verified. Run ${formatCliCommand("openclaw gateway status --deep", env)} and stop it through its service owner before retrying.`,
+  );
+}
 
 export function assertDoctorServiceSelection(
   env: NodeJS.ProcessEnv,
