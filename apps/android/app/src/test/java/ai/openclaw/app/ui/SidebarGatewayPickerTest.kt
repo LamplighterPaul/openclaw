@@ -933,6 +933,7 @@ class SidebarGatewayPickerTest {
                     connection = connection,
                     visible = true,
                     showCloseButton = false,
+                    permanentSidebar = true,
                     onClose = {},
                     onDragActiveChange = {},
                     onNewSession = {},

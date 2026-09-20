@@ -435,6 +435,7 @@ internal fun OpenClawSidebar(
   connection: GatewayConnectionDisplay,
   visible: Boolean,
   showCloseButton: Boolean,
+  permanentSidebar: Boolean,
   onClose: () -> Unit,
   onDragActiveChange: (Boolean) -> Unit,
   onNewSession: () -> Unit,
@@ -474,8 +475,8 @@ internal fun OpenClawSidebar(
   var searchVisible by rememberSaveable { mutableStateOf(false) }
   val searchFocus = remember { FocusRequester() }
   var searchFocused by remember { mutableStateOf(false) }
-  val restoreSearchFocus = searchVisible && searchFocused && !showCloseButton
-  LaunchedEffect(showCloseButton) {
+  val restoreSearchFocus = searchVisible && searchFocused && permanentSidebar
+  LaunchedEffect(permanentSidebar) {
     // Only the previously focused field may reclaim focus after moving out of the modal host.
     if (restoreSearchFocus) searchFocus.requestFocus()
   }
@@ -667,7 +668,7 @@ internal fun OpenClawSidebar(
     }
 
     // Cancel gesture-bearing rows when changing hosts; keep navigation, search and scroll above it.
-    key(showCloseButton) {
+    key(permanentSidebar) {
       Column(
         modifier =
           Modifier
@@ -961,7 +962,7 @@ internal fun OpenClawSidebar(
     HorizontalDivider(color = palette.hairline)
     SidebarGatewayControl(viewModel, connection, palette) {
       viewModel.openGatewaySettings()
-      onClose()
+      if (!permanentSidebar) onClose()
     }
   }
 }

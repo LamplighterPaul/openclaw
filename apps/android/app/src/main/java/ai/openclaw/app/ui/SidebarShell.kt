@@ -35,9 +35,10 @@ import androidx.window.layout.DisplayFeature
 import androidx.window.layout.FoldingFeature
 import kotlin.math.roundToInt
 
-internal data class BookPaneBounds(
+internal data class SidebarPaneBounds(
   val start: IntRect,
   val end: IntRect,
+  val foldSeparated: Boolean = true,
 )
 
 /** Physical window rectangles. Partial or additional separators retain the root safety fallback. */
@@ -46,7 +47,7 @@ internal fun bookPaneBounds(
   features: List<DisplayFeature>,
   direction: LayoutDirection,
   density: Density,
-): BookPaneBounds? {
+): SidebarPaneBounds? {
   val separator =
     features.filterIsInstance<FoldingFeature>().singleOrNull {
       (it.isSeparating || it.occlusionType == FoldingFeature.OcclusionType.FULL) &&
@@ -56,7 +57,7 @@ internal fun bookPaneBounds(
     } ?: return null
   val left = host.copy(right = separator.bounds.left)
   val right = host.copy(left = separator.bounds.right)
-  val panes = if (direction == LayoutDirection.Ltr) BookPaneBounds(left, right) else BookPaneBounds(right, left)
+  val panes = if (direction == LayoutDirection.Ltr) SidebarPaneBounds(left, right) else SidebarPaneBounds(right, left)
   with(density) {
     // Reserve a usable navigation header and a phone-width destination, not a fixed drawer width.
     if (panes.start.width < 280.dp.roundToPx() || panes.end.width < 320.dp.roundToPx() ||
@@ -69,10 +70,29 @@ internal fun bookPaneBounds(
   return panes
 }
 
+/** A flat sidebar is safe only when the complete host is unobstructed. */
+internal fun flatSidebarPaneBounds(
+  host: IntRect,
+  features: List<DisplayFeature>,
+  direction: LayoutDirection,
+  density: Density,
+): SidebarPaneBounds? {
+  with(density) {
+    if (host.width < 600.dp.roundToPx() || host.height < 320.dp.roundToPx()) return null
+    if (foldSafeRegion(host, features, direction) != host) return null
+    val width = (if (host.width >= 840.dp.roundToPx()) 320.dp else 280.dp).roundToPx()
+    return if (direction == LayoutDirection.Ltr) {
+      SidebarPaneBounds(host.copy(right = host.left + width), host.copy(left = host.left + width), foldSeparated = false)
+    } else {
+      SidebarPaneBounds(host.copy(left = host.right - width), host.copy(right = host.right - width), foldSeparated = false)
+    }
+  }
+}
+
 @Composable
 internal fun SidebarNavigationShell(
   drawerState: DrawerState,
-  bookPanes: BookPaneBounds? = null,
+  sidebarPanes: SidebarPaneBounds? = null,
   sidebarBand: IntRect? = null,
   gesturesEnabled: Boolean = true,
   drawerContent: @Composable () -> Unit,
@@ -92,7 +112,7 @@ internal fun SidebarNavigationShell(
       }
     ModalNavigationDrawer(
       drawerState = drawerState,
-      gesturesEnabled = bookPanes == null && gesturesEnabled,
+      gesturesEnabled = sidebarPanes == null && gesturesEnabled,
       drawerContent = {
         // Discard predictive-Back mechanics, never the destination's layout ancestry.
         key(drawerState) {
@@ -126,7 +146,7 @@ internal fun SidebarNavigationShell(
                 .testTag("sidebar-drawer"),
           ) {
             // The closed empty sheet retains real measured anchors in permanent mode.
-            if (bookPanes == null) sidebar()
+            if (sidebarPanes == null) sidebar()
           }
         }
       },
@@ -136,20 +156,20 @@ internal fun SidebarNavigationShell(
           content = {
             // Keep the focused destination attached to the same parents across mode changes.
             Box(Modifier.recalculateWindowInsets().clipToBounds()) { content() }
-            if (bookPanes != null) {
+            if (sidebarPanes != null) {
               Box(Modifier.recalculateWindowInsets().clipToBounds().testTag("sidebar-permanent")) { sidebar() }
             }
           },
           modifier = Modifier.fillMaxSize(),
         ) { measurables, constraints ->
-          val destinationBounds = bookPanes?.end ?: IntRect(0, 0, constraints.maxWidth, constraints.maxHeight)
+          val destinationBounds = sidebarPanes?.end ?: IntRect(0, 0, constraints.maxWidth, constraints.maxHeight)
           val destinationPlaceable =
             measurables[0].measure(Constraints.fixed(destinationBounds.width, destinationBounds.height))
           val sidebarPlaceable =
-            bookPanes?.let { measurables[1].measure(Constraints.fixed(it.start.width, it.start.height)) }
+            sidebarPanes?.let { measurables[1].measure(Constraints.fixed(it.start.width, it.start.height)) }
           layout(constraints.maxWidth, constraints.maxHeight) {
             destinationPlaceable.place(destinationBounds.left, destinationBounds.top)
-            bookPanes?.let { sidebarPlaceable?.place(it.start.left, it.start.top) }
+            sidebarPanes?.let { sidebarPlaceable?.place(it.start.left, it.start.top) }
           }
         }
       }

@@ -11,6 +11,7 @@ import ai.openclaw.app.closeNodeRuntimeTestFixture
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.provider.Settings
 import android.view.View
@@ -19,14 +20,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -41,6 +47,7 @@ import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
@@ -63,7 +70,9 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
@@ -98,6 +107,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.util.ReflectionHelpers
+import java.io.File
 import java.util.Collections
 import java.util.UUID
 
@@ -112,6 +122,8 @@ class RootScreenFoldTest {
   private lateinit var backDispatcher: OnBackPressedDispatcher
   private lateinit var focusManager: FocusManager
   private var direction by mutableStateOf(LayoutDirection.Ltr)
+  private var hostWidth by mutableStateOf<Dp?>(null)
+  private var compactModalFixture = false
 
   @Before
   @SuppressLint("RestrictedApi") // Use WindowManager's own decorator boundary, not a production test hook.
@@ -177,7 +189,7 @@ class RootScreenFoldTest {
 
   @Test
   fun authenticatedSettingsKeepSearchDraftAndReturnRouteAcrossFoldChanges() {
-    withRoot(completed = true) {
+    withRoot(completed = true, expandedSidebar = true) {
       composeRule.onNodeWithContentDescription("Search settings").performClick()
       val search = composeRule.onNode(hasSetTextAction())
       search.performClick().performTextReplacement("Appearance")
@@ -898,8 +910,81 @@ class RootScreenFoldTest {
     }
   }
 
+  @Test
+  @Config(qualifiers = "w650dp-h800dp-mdpi")
+  @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+  fun unfoldedPhoneShowsSidebarBesideChatAndCanCollapseIt() {
+    hostWidth = 650.dp
+    withRoot(completed = true, destination = HomeDestination.Chat, expandedSidebar = true) {
+      System.getenv("OPENCLAW_FOLD_SCREENSHOT")?.let { path ->
+        File(path).apply { parentFile?.mkdirs() }.outputStream().use {
+          check(
+            composeRule
+              .onRoot()
+              .captureToImage()
+              .asAndroidBitmap()
+              .compress(Bitmap.CompressFormat.PNG, 100, it),
+          )
+        }
+      }
+      composeRule.onNodeWithTag("sidebar-permanent").assertIsDisplayed()
+      val editor = composeRule.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("chat-composer-surface")))
+      editor.performClick().performTextReplacement("Keep my unfolded draft")
+      val editorId = editor.fetchSemanticsNode().id
+      composeRule.runOnIdle { hostWidth = 500.dp }
+      composeRule.onNodeWithTag("sidebar-permanent").assertDoesNotExist()
+      editor.assertTextEquals("Keep my unfolded draft")
+      composeRule.runOnIdle { hostWidth = 650.dp }
+      composeRule.onNodeWithTag("sidebar-permanent").assertIsDisplayed()
+      editor.assertTextEquals("Keep my unfolded draft")
+      assertEquals(editorId, editor.fetchSemanticsNode().id)
+      composeRule.onNodeWithTag("sidebar-close").performClick()
+      composeRule.onNodeWithTag("sidebar-permanent").assertDoesNotExist()
+      editor.assertTextEquals("Keep my unfolded draft")
+      assertEquals(editorId, editor.fetchSemanticsNode().id)
+      composeRule.onNodeWithContentDescription("Show Sidebar").performClick()
+      composeRule.onNodeWithTag("sidebar-permanent").assertIsDisplayed()
+      editor.assertTextEquals("Keep my unfolded draft")
+      assertEquals(editorId, editor.fetchSemanticsNode().id)
+    }
+  }
+
+  @Test
+  @Config(qualifiers = "w650dp-h800dp-mdpi")
+  fun compactSidebarSearchKeepsFocusWhenUnfoldingToPermanent() {
+    hostWidth = 500.dp
+    withRoot(completed = true, expandedSidebar = true) {
+      composeRule.onNodeWithTag("sidebar-open-settings").performClick()
+      composeRule.onNodeWithTag("sidebar-search-toggle").performClick()
+      val search = composeRule.onNodeWithTag("sidebar-search")
+      search.performClick().performTextReplacement("retained search")
+      search.assertIsFocused()
+      val searchId = search.fetchSemanticsNode().id
+      composeRule.runOnIdle { hostWidth = 650.dp }
+      composeRule.onNodeWithTag("sidebar-permanent").assertIsDisplayed()
+      search.assertTextContains("retained search").assertIsFocused()
+      assertEquals(searchId, search.fetchSemanticsNode().id)
+      composeRule.runOnIdle { hostWidth = 500.dp }
+      composeRule.onNodeWithTag("sidebar-open-settings").performClick()
+      search.assertTextContains("retained search")
+      assertEquals(searchId, search.fetchSemanticsNode().id)
+    }
+  }
+
   private fun emit(features: List<DisplayFeature>) {
-    composeRule.runOnIdle { assertTrue(layouts.tryEmit(WindowLayoutInfo(features))) }
+    composeRule.runOnIdle {
+      if (compactModalFixture) {
+        // Simulate unfolding for the book cases; ordinary flat/tabletop cases exercise a compact drawer.
+        val bookWindow =
+          features.filterIsInstance<FoldingFeature>().any {
+            it.orientation == FoldingFeature.Orientation.VERTICAL &&
+              (it.isSeparating || it.occlusionType == FoldingFeature.OcclusionType.FULL) &&
+              it.bounds.left > 0 && it.bounds.left < view.width
+          }
+        hostWidth = if (bookWindow) null else 500.dp
+      }
+      assertTrue(layouts.tryEmit(WindowLayoutInfo(features)))
+    }
     if (!composeRule.mainClock.autoAdvance) composeRule.mainClock.advanceTimeBy(32)
     composeRule.waitForIdle()
   }
@@ -908,8 +993,11 @@ class RootScreenFoldTest {
     completed: Boolean,
     destination: HomeDestination = HomeDestination.Settings,
     configureRuntime: (NodeRuntime) -> Unit = {},
+    expandedSidebar: Boolean = false,
     verify: (MainViewModel) -> Unit,
   ) {
+    compactModalFixture = completed && !expandedSidebar
+    if (compactModalFixture) hostWidth = 500.dp
     val app = RuntimeEnvironment.getApplication() as NodeApp
     val prefs = SecurePrefs(app, app.getSharedPreferences("root-fold-${UUID.randomUUID()}", Context.MODE_PRIVATE))
     prefs.setOnboardingCompleted(completed)
@@ -929,7 +1017,9 @@ class RootScreenFoldTest {
         backDispatcher = requireNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
         LaunchedEffect(activity) { WindowCompat.setDecorFitsSystemWindows(activity.window, false) }
         CompositionLocalProvider(LocalLayoutDirection provides direction) {
-          RootScreen(model)
+          Box(Modifier.fillMaxSize()) {
+            Box(hostWidth?.let { Modifier.width(it) } ?: Modifier) { RootScreen(model) }
+          }
         }
       }
       composeRule.waitForIdle()

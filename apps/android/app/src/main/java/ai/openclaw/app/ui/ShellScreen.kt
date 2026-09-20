@@ -143,22 +143,25 @@ fun ShellScreen(
   ClawDesignTheme(dark = shellDark, family = appearanceThemeFamily, accentArgb = appearanceAccentArgb ?: gatewayAccentArgb) {
     val nav = rememberSaveable(saver = ShellNavigation.Saver) { ShellNavigation() }
     var commandOpen by rememberSaveable { mutableStateOf(false) }
+    var wideSidebarExpanded by rememberSaveable { mutableStateOf(true) }
     var conversationScreenWasActive by rememberSaveable { mutableStateOf(false) }
     val pendingTrust by viewModel.pendingGatewayTrust.collectAsState()
     val gatewayAddition by viewModel.gatewayAdditionRequest.collectAsState()
     FoldAwareContent(
       features = features,
       modifier = modifier.background(ClawTheme.colors.canvas),
-      bookPanesEnabled = !commandOpen && pendingTrust == null,
+      sidebarPanesEnabled = !commandOpen && pendingTrust == null,
+      wideSidebarExpanded = wideSidebarExpanded,
       tabletopEnabled = nav.activeTab == Tab.Chat && !commandOpen && pendingTrust == null,
     ) { foldBounds ->
-      val bookPanes = foldBounds.book
-      val permanentSidebar = bookPanes != null
+      val sidebarPanes = foldBounds.sidebar
+      val permanentSidebar = sidebarPanes != null
       // Mode changes discard modal operations and their drag state, not the two content slots.
       val sidebarDrawerState = key(permanentSidebar) { rememberDrawerState(initialValue = DrawerValue.Closed) }
       var sidebarRowDragging by remember(sidebarDrawerState) { mutableStateOf(false) }
       val drawerScope = key(sidebarDrawerState) { rememberCoroutineScope() }
       val openSidebar: () -> Unit = {
+        wideSidebarExpanded = true
         if (!permanentSidebar) drawerScope.launch { sidebarDrawerState.open() }
       }
       val closeSidebar: () -> Unit = {
@@ -247,7 +250,7 @@ fun ShellScreen(
       Box(modifier = Modifier.fillMaxSize().background(ClawTheme.colors.canvas)) {
         SidebarNavigationShell(
           drawerState = sidebarDrawerState,
-          bookPanes = bookPanes,
+          sidebarPanes = sidebarPanes,
           sidebarBand = foldBounds.sidebarBand,
           gesturesEnabled = !sidebarRowDragging,
           drawerContent = {
@@ -263,8 +266,11 @@ fun ShellScreen(
               visible =
                 !commandOpen && pendingTrust == null &&
                   (permanentSidebar || sidebarDrawerState.isOpen || sidebarDrawerState.targetValue == DrawerValue.Open),
-              showCloseButton = !permanentSidebar,
-              onClose = closeSidebar,
+              showCloseButton = sidebarPanes?.foldSeparated != true,
+              permanentSidebar = permanentSidebar,
+              onClose = {
+                if (permanentSidebar) wideSidebarExpanded = false else closeSidebar()
+              },
               onDragActiveChange = { sidebarRowDragging = it },
               onNewSession = {
                 viewModel.startNewChat(worktree = false)
