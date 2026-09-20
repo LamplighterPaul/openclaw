@@ -215,7 +215,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
   const tsconfigPaths = entryPaths.resolver.options.tsconfigPaths;
   const demandedModules = new Map<string, { url: string } | { error: unknown }>();
   let resolvingPaths = false;
-  params.instance.lifecycle.onDispose(() => {
+  params.instance.onModuleDispose(() => {
     for (const build of sourceBuilds.values()) {
       build.dispose();
     }
@@ -459,7 +459,7 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       return resolved;
     },
   });
-  params.instance.lifecycle.onDispose(() => hooks.deregister());
+  params.instance.onModuleDispose(() => hooks.deregister());
   const results = new Map<string, { value: unknown } | { error: unknown }>();
   bindModuleLoader(
     (source) =>
