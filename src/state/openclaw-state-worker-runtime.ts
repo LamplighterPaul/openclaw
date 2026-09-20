@@ -101,6 +101,8 @@ import {
   readSkillCuratorStateInDatabase,
   recordSkillUsageInDatabase,
 } from "../skills/workshop/curator.kernel.js";
+import { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
+import { ensureSkillWorkshopSchemaInDatabase } from "../skills/workshop/store-sqlite-schema.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
@@ -502,6 +504,10 @@ export function executeSharedStateCommand(
   }
   if (command.type === "deliveryQueue.failPending") {
     return executePendingDeliveryFailure(command.input, writeOptions);
+  }
+  if (command.type === "workshop.events.list") {
+    ensureSkillWorkshopSchemaInDatabase(database, writeOptions);
+    return listStoredSkillProposalEventsInDatabase(database.db, command.input);
   }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
