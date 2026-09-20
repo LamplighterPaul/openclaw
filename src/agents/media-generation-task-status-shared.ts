@@ -125,6 +125,7 @@ async function prepareMediaGenerationTaskLookup(params: {
   agentId?: string;
   taskKind: string;
   sourcePrefix: string;
+  includeTerminalTasks?: boolean;
 }) {
   const context = captureOpenClawStateWorkerContext();
   const store = getTaskRegistryStore();
@@ -143,6 +144,7 @@ async function prepareMediaGenerationTaskLookup(params: {
         task.runtime === "cli" &&
         task.scopeKind === "session" &&
         task.taskKind === params.taskKind &&
+        (params.includeTerminalTasks || isTaskStillBlockingDuplicateGuard(task)) &&
         (!sourcePrefix || mediaGenerationSourceMatches(task, sourcePrefix)) &&
         Boolean(normalizeOptionalString(task.ownerKey ?? task.requesterSessionKey)) &&
         !resolveMediaGenerationTaskRequesterAgentId(task),
@@ -474,7 +476,11 @@ async function findDuplicateGuardMediaGenerationTaskForSession(params: {
   if (!sessionKey) {
     return undefined;
   }
-  const lookup = await prepareMediaGenerationTaskLookup({ ...params, sessionKey });
+  const lookup = await prepareMediaGenerationTaskLookup({
+    ...params,
+    sessionKey,
+    includeTerminalTasks: true,
+  });
   lookup.assertCurrent();
   return (
     findRecentStartedMediaGenerationTaskForSession({ ...params, sessionKey, ...lookup }) ??

@@ -218,6 +218,46 @@ describe("media generation delivery-phase prompt guard", () => {
     ]);
   });
 
+  it.each(["succeeded", "failed"] as const)(
+    "skips requester config for terminal-only %s status and prompt lookups",
+    async (status) => {
+      taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockResolvedValue([
+        makeTask({ ownerKey: "global", status }),
+      ]);
+
+      expect(await videoTaskStatusOwner.listActiveTasksForSession("global", "ops")).toEqual([]);
+      expect(
+        await videoTaskStatusOwner.buildActiveTaskPromptContextForSession("global", "ops"),
+      ).toBeUndefined();
+      expect(configMocks.readConfig).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["succeeded", "failed"] as const)(
+    "resolves a persisted legacy %s task before applying a cached duplicate guard",
+    async (status) => {
+      const task = makeTask({ ownerKey: "global", status });
+      recordRecentMediaGenerationTaskStartForSession({
+        sessionKey: "global",
+        agentId: "ops",
+        taskKind: "video_generation",
+        sourcePrefix: "video_generate",
+        taskId: task.taskId,
+        runId: task.runId,
+        taskLabel: task.task,
+        requestKey: "same-request",
+        progressSummary: "Generating video",
+      });
+      taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockResolvedValue([task]);
+
+      const duplicate = await videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", {
+        agentId: "ops",
+        requestKey: "same-request",
+      });
+      expect(duplicate).toEqual(status === "succeeded" ? task : undefined);
+    },
+  );
+
   it.each(
     (["active", "duplicate"] as const).flatMap((lookup) =>
       (["completed", "deleted"] as const).flatMap((change) =>
@@ -233,7 +273,7 @@ describe("media generation delivery-phase prompt guard", () => {
         started.resolve();
         return config.promise;
       });
-      const legacy = makeTask({ taskId: "legacy", ownerKey: "global", status: "succeeded" });
+      const legacy = makeTask({ taskId: "legacy", ownerKey: "global" });
       const known = makeTask({ taskId: "known", ownerKey: "global", requesterAgentId: "ops" });
       let records = [legacy, known];
       taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockImplementation(async () => records);
@@ -242,7 +282,8 @@ describe("media generation delivery-phase prompt guard", () => {
           ? videoTaskStatusOwner.listActiveTasksForSession("global", "ops")
           : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
       await started.promise;
-      records = change === "deleted" ? [legacy] : [legacy, { ...known, status: "succeeded" }];
+      records =
+        change === "deleted" ? [] : records.map((task) => ({ ...task, status: "succeeded" }));
       if (completion === "resolves") {
         config.resolve(capturedConfig);
       } else {
