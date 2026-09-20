@@ -375,7 +375,7 @@ export function buildTaskRecordForCreate(
     requesterSessionKey,
     ownerKey,
     scopeKind,
-    childSessionKey: params.childSessionKey,
+    childSessionKey: normalizeOptionalString(params.childSessionKey),
     parentFlowId: normalizeOptionalString(params.parentFlowId),
     parentTaskId: normalizeOptionalString(params.parentTaskId),
     agentId,
@@ -422,6 +422,12 @@ export function applyTaskRecordPatch(
     ...(patch.executionOwner ? { executionOwner: { ...patch.executionOwner } } : {}),
     ...(patch.detail !== undefined ? { detail: structuredClone(patch.detail) } : {}),
   };
+  if (Object.hasOwn(patch, "runId")) {
+    updated.runId = normalizeOptionalString(patch.runId);
+  }
+  if (Object.hasOwn(patch, "childSessionKey")) {
+    updated.childSessionKey = normalizeOptionalString(patch.childSessionKey);
+  }
   const becomesTerminal =
     !isTerminalTaskStatus(current.status) && isTerminalTaskStatus(updated.status);
   if (becomesTerminal && patch.endedAt === undefined) {
@@ -431,7 +437,7 @@ export function applyTaskRecordPatch(
   if (Object.hasOwn(patch, "error") && patch.error === undefined) {
     delete next.error;
   }
-  if (Object.hasOwn(patch, "childSessionKey") && patch.childSessionKey === undefined) {
+  if (Object.hasOwn(patch, "childSessionKey") && updated.childSessionKey === undefined) {
     delete next.childSessionKey;
   }
   if (isTerminalTaskStatus(next.status) && typeof next.cleanupAfter !== "number") {

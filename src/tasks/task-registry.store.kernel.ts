@@ -611,15 +611,12 @@ export function readTaskRegistryMutationSnapshotInDatabase(
     const runId = scope.runId?.trim();
     const childSessionKey = scope.childSessionKey?.trim();
     const selected = kysely.selectFrom("task_runs").where((eb) => {
-      // Null-bound trim predicates would force even a task-ID-only lookup to scan all rows.
       const matches = [eb("task_id", "=", scope.taskId)];
       if (runId) {
-        matches.push(eb(eb.fn<string>("trim", [eb.ref("run_id")]), "=", runId));
+        matches.push(eb("run_id", "=", runId));
       }
       if (childSessionKey) {
-        matches.push(
-          eb(eb.fn<string>("trim", [eb.ref("child_session_key")]), "=", childSessionKey),
-        );
+        matches.push(eb("child_session_key", "=", childSessionKey));
       }
       return eb.or(matches);
     });
