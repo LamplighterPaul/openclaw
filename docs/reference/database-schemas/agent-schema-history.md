@@ -29,8 +29,59 @@ title: "Agent schema history"
 | 19      | Source-qualified immutable session creators; historical ambiguity remains unknown                                                                                                                                                                      | Unreleased                                      |
 | 20      | Authoritative cold transcript archives with exact restoration metadata and self-contained backup payloads                                                                                                                                              | Unreleased                                      |
 | 21      | Incremental canonical-session validation with transactional node, window, and main-key invalidation                                                                                                                                                    | Unreleased                                      |
+| 22      | Selective transcript compression, binary memory embeddings, and stable memory full-text index identities                                                                                                                                               | Unreleased                                      |
 
 Version 3 was an unshipped development step folded into version 4.
+
+### Compact agent payload storage
+
+Agent schema **22** changes the transcript and memory storage representations.
+The [storage design](https://github.com/openclaw/openclaw/issues/153618) records
+the migration scope and required proof. Shared-state schema remains 17.
+
+Each transcript event retains its original JSON in exactly one representation:
+identity `TEXT` or a checksummed level-1 Zstd `BLOB`. Compression applies only to
+eligible UTF-8 events from 1 KiB through 4 MiB, and only when the frame plus its
+navigation metadata saves at least 64 bytes and 10 percent. Small, oversized,
+malformed, and exceptional Unicode records retain identity storage. UTF-16
+databases retain identity storage and their existing native byte accounting.
+The metadata holds the existing navigation projections and exact context-budget
+sizes; selected body reads reconstruct the original text. No extension or new
+SQLite file format is required. A runtime without Zstd can write identity rows,
+but refuses to decode an existing compressed row.
+
+Memory chunks and embedding caches use little-endian Float64 vectors, preserving
+the provider's finite numbers without a Float32 precision change. The optional
+vector accelerator remains derived Float32 storage. Chunks keep their logical
+IDs and gain a stable integer identity used by full-text maintenance triggers.
+Malformed legacy vectors preserve chunk text and provenance and record existing
+source/vector rebuild debt. Usage rollups also move to a metadata envelope plus
+an identity or compressed body in the existing cache table; obsolete or invalid
+derived caches can be rebuilt.
+
+Transcript full-text search keeps its existing content and rowids. A derived row
+map indexes session/message ownership so cleanup and reconciliation delete
+selected FTS rowids without scanning the full text table. Duplicate and null
+message IDs remain valid. Migration copies existing rowids without rebuilding
+or retokenizing text.
+
+The admitted migration converts one transcript record at a time, verifies each
+compressed frame against its original bytes, preserves row identities and
+timestamps, and commits table replacements with both schema markers. Unknown
+columns or dependencies that a rebuild would discard cause a refusal. Earlier
+supported schemas run their prerequisite migrations first. Conversion needs
+temporary space for old and replacement tables, journal/WAL activity, and the
+verified backup. Freed pages are reusable; a smaller payload does not by itself
+shrink the database file. Existing maintenance owns physical reclamation.
+
+Stop all writers and take a verified WAL-aware backup before upgrading. Supported
+updaters run the candidate's Doctor under the existing maintenance owner. The
+2026.9.2 updater retains its agent-bump refusal and
+[manual update path](/install/updating#updating-from-2026.9.2-across-a-schema-bump).
+Interrupted conversion rolls back; keep writers stopped and resume Doctor with
+the compatible build. Older builds refuse schema 22. Rollback requires the
+pre-upgrade backup and matching build; lowering markers cannot restore the old
+payload representation.
 
 ### Incremental canonical-session validation
 

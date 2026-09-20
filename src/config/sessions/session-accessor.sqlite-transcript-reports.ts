@@ -36,6 +36,7 @@ import {
 } from "./session-entry-codec.js";
 import { SessionEntryNavigation, type SessionNavigationEntry } from "./session-entry-navigation.js";
 import { applyAssistantDeliveryDirectives } from "./transcript-assistant-delivery.js";
+import { transcriptEventJsonSql } from "./transcript-payload.js";
 import {
   assertOwnedTranscriptWriteCommit,
   SessionTranscriptWriterClaimReboundError,
@@ -114,7 +115,7 @@ function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
       database.db,
       getSessionKysely(database.db)
         .selectFrom("transcript_events")
-        .select(["seq", "event_json"])
+        .select(["seq", transcriptEventJsonSql(database.db).as("event_json")])
         .where("session_id", "=", sessionId)
         .orderBy("seq", "asc"),
     )) {
@@ -154,7 +155,7 @@ function latestCustomReport(
       database.db,
       getSessionKysely(database.db)
         .selectFrom("transcript_events")
-        .select("event_json")
+        .select(transcriptEventJsonSql(database.db).as("event_json"))
         .where("session_id", "=", sessionId)
         .where("seq", "=", entry.seq),
     );

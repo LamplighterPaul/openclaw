@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/memory-core-host-engine-knn";
 import {
+  encodeMemoryEmbedding,
   ensureMemoryIndexSchema,
   loadSqliteVecExtension,
   requireNodeSqlite,
@@ -603,7 +604,7 @@ describe("searchVector sqlite-vec KNN", () => {
           `chunk ${i}`,
           // Tiny 2-dim embeddings: the test asserts the yielding *cadence*,
           // not real similarity scoring (other tests cover scoring).
-          JSON.stringify([Math.cos(i), Math.sin(i)]),
+          encodeMemoryEmbedding([Math.cos(i), Math.sin(i)]),
           i,
         );
       }
@@ -654,7 +655,7 @@ describe("searchVector sqlite-vec KNN", () => {
       db.exec(`
         ALTER TABLE memory_index_chunks RENAME TO observed_chunks;
         CREATE VIEW memory_index_chunks AS
-          SELECT rowid, id, path, source, start_line, end_line, model, text,
+          SELECT chunk_rowid AS rowid, id, path, source, start_line, end_line, model, text,
                  observe_embedding(embedding) AS embedding
           FROM observed_chunks;
       `);
@@ -717,10 +718,81 @@ describe("searchVector sqlite-vec KNN", () => {
       params.id,
       params.model,
       `chunk ${params.id}`,
-      JSON.stringify(params.vector),
+      encodeMemoryEmbedding(params.vector),
       1,
     );
   }
+
+  it.each([9_007_199_254_740_993n, 9_007_199_254_740_995n])(
+    "scans the full signed rowid domain across sparse unsafe-integer batch boundaries from %s",
+    async (firstHighRowid) => {
+      const db = createFallbackDb();
+      try {
+        // Four low identities put an unsafe odd rowid at the first batch boundary;
+        // the two starting values exercise both Number rounding directions.
+        const highRows = Array.from(
+          { length: 252 },
+          (_, index) => firstHighRowid + BigInt(index) * 2n,
+        );
+        const boundary = highRows.at(-1)!;
+        const rowids = [
+          -9_223_372_036_854_775_808n,
+          -9_007_199_254_740_993n,
+          -1n,
+          0n,
+          ...highRows,
+          boundary + 1n,
+          boundary + 2n,
+          boundary + 1_000_000n,
+          9_223_372_036_854_775_807n,
+        ];
+        const winnerIndex = 256;
+        const runnerUpIndex = rowids.length - 1;
+        const ids = rowids.map((_, index) => `row-${index}`);
+        const insert = db.prepare(`INSERT INTO memory_index_chunks
+          (chunk_rowid, id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+          VALUES (?, ?, 'memory/boundary.md', 'memory', 1, 2, 'hash', 'target-model', 'boundary body', ?, 1)`);
+        insert.setReadBigInts(true);
+        for (const [index, rowid] of rowids.entries()) {
+          const vector =
+            index === winnerIndex ? [1, 0] : index === runnerUpIndex ? [0.8, 0.6] : [0, 1];
+          insert.run(rowid, ids[index]!, encodeMemoryEmbedding(vector));
+        }
+
+        const scanned: string[] = [];
+        db.function("observe_embedding", (id, embedding) => {
+          scanned.push(String(id));
+          if (scanned.length > rowids.length) {
+            throw new Error("Fallback cursor repeated an already-scanned row");
+          }
+          return embedding;
+        });
+        db.exec(`
+          ALTER TABLE memory_index_chunks RENAME TO observed_chunks;
+          CREATE VIEW memory_index_chunks AS
+            SELECT chunk_rowid AS rowid, id, path, source, start_line, end_line, model, text,
+                   observe_embedding(id, embedding) AS embedding FROM observed_chunks;
+        `);
+
+        const results = await searchVectorFixture(db, { limit: rowids.length });
+        expect(scanned).toEqual(ids);
+        expect(results.map((result) => result.id)).toEqual([
+          ids[winnerIndex],
+          ids[runnerUpIndex],
+          ...ids.filter((_, index) => index !== winnerIndex && index !== runnerUpIndex),
+        ]);
+        expect(results[0]?.score).toBe(1);
+        expect(results[1]?.score).toBeCloseTo(0.8);
+        expect(
+          results.every(
+            (result) => typeof result.startLine === "number" && typeof result.endLine === "number",
+          ),
+        ).toBe(true);
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it("returns an empty result set when no chunks match the provider model", async () => {
     const db = createFallbackDb();
@@ -772,6 +844,29 @@ describe("searchVector sqlite-vec KNN", () => {
       insertFallbackChunk(db, { id: "lone", model: "target-model", vector: [1, 0] });
       const results = await searchVectorFixture(db);
       expect(results.map((r) => r.id)).toEqual(["lone"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps malformed binary vectors inert without interrupting fallback search", async () => {
+    const db = createFallbackDb();
+    try {
+      const malformed = [new Uint8Array([1, 2, 3]), new Uint8Array([0, 0, 0, 0, 0, 0, 240, 127])];
+      for (const [index, embedding] of malformed.entries()) {
+        const id = `malformed-${index}`;
+        insertFallbackChunk(db, { id, model: "target-model", vector: [] });
+        db.prepare("UPDATE memory_index_chunks SET embedding = ? WHERE id = ?").run(embedding, id);
+      }
+      insertFallbackChunk(db, { id: "healthy", model: "target-model", vector: [1, 0] });
+
+      const results = await searchVectorFixture(db);
+
+      expect(results.map(({ id, score }) => ({ id, score }))).toEqual([
+        { id: "healthy", score: 1 },
+        { id: "malformed-0", score: 0 },
+        { id: "malformed-1", score: 0 },
+      ]);
     } finally {
       db.close();
     }
@@ -930,7 +1025,7 @@ describe("searchVector sqlite-vec KNN", () => {
         setImmediate(() => {
           db.prepare("UPDATE memory_index_chunks SET text = ?, embedding = ? WHERE id = ?").run(
             "replacement",
-            "[0,1]",
+            encodeMemoryEmbedding([0, 1]),
             "chunk-0",
           );
           resolve();
@@ -975,7 +1070,7 @@ describe("searchVector sqlite-vec KNN", () => {
       db.exec(`
         ALTER TABLE memory_index_chunks RENAME TO observed_chunks;
         CREATE VIEW memory_index_chunks AS
-          SELECT rowid, id, path, source, start_line, end_line, model, text,
+          SELECT chunk_rowid AS rowid, id, path, source, start_line, end_line, model, text,
                  observe_embedding(embedding) AS embedding
           FROM observed_chunks;
       `);
@@ -984,7 +1079,7 @@ describe("searchVector sqlite-vec KNN", () => {
         if (!replaced) {
           writer
             .prepare("UPDATE observed_chunks SET text = ?, embedding = ? WHERE id = ?")
-            .run("replacement payload", "[0,1]", "winner");
+            .run("replacement payload", encodeMemoryEmbedding([0, 1]), "winner");
           replaced = true;
         }
         return embedding;
@@ -1154,7 +1249,7 @@ describe("searchVector sqlite-vec KNN", () => {
           params.id,
           params.model,
           `chunk ${params.id}`,
-          JSON.stringify(params.vector),
+          encodeMemoryEmbedding(params.vector),
           1,
         );
         insertVector.run(params.id, vectorToBlob(params.vector));

@@ -91,6 +91,35 @@ describe("kysely sync helpers", () => {
     expect(executeSqliteQueryTakeFirstSync(database, select)).toBeUndefined();
   });
 
+  it("retains 64-bit insert identities without breaking later writes or numeric reads", () => {
+    database = new DatabaseSync(":memory:");
+    database.exec("create table items (id integer primary key, name text not null)");
+    enableNodeSqliteKyselyStatementCache(database);
+    const db = getNodeSqliteKysely<SyncHelperTestDatabase>(database);
+    const id = 9007199254740993n;
+    const inserted = executeSqliteQuerySync(
+      database,
+      db.insertInto("items").values({ id: sql<number>`${id}`, name: "original" }),
+    );
+    expect(inserted).toEqual({ insertId: id, numAffectedRows: 1n, rows: [] });
+    for (const name of ["first", "second", "third"]) {
+      expect(executeSqliteQuerySync(database, db.updateTable("items").set({ name }))).toEqual({
+        numAffectedRows: 1n,
+        rows: [],
+      });
+      expect(
+        executeSqliteQueryTakeFirstSync(
+          database,
+          db.selectFrom("items").select((eb) => eb.fn.countAll<number>().as("count")),
+        ),
+      ).toEqual({ count: 1 });
+    }
+    expect(executeSqliteQuerySync(database, db.deleteFrom("items"))).toEqual({
+      numAffectedRows: 1n,
+      rows: [],
+    });
+  });
+
   it("preserves raw readers and distinguishes writes with and without returned rows", () => {
     database = new DatabaseSync(":memory:");
     database.exec("create table items (id integer primary key, name text not null)");

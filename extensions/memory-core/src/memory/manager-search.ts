@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   cosineSimilarity,
-  parseEmbedding,
+  decodeMemoryEmbedding,
   truncateUtf16Safe,
 } from "openclaw/plugin-sdk/memory-core-host-engine-knn";
 import type { MemorySource } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -432,16 +432,18 @@ export async function searchChunksByEmbedding(params: {
   // Keep batches bounded instead of calling `.all()` across the entire chunks
   // table, and do not hold a sqlite iterator open across the setImmediate yield
   // below. The rowid cursor keeps memory bounded without OFFSET rescans.
-  const stmt = params.db.prepare(
-    `SELECT rowid, embedding\n` +
-      `  FROM memory_index_chunks\n` +
-      ` WHERE ${modelFilter} AND rowid > ?${params.sourceFilter.sql}\n` +
-      ` ORDER BY rowid ASC\n` +
-      ` LIMIT ?`,
-  );
+  const projection =
+    `SELECT rowid AS rowid, embedding\n` + `  FROM memory_index_chunks\n` + ` WHERE ${modelFilter}`;
+  const ordering = `${params.sourceFilter.sql}\n ORDER BY rowid ASC\n LIMIT ?`;
+  // The first batch includes zero and negative identities, including INT64_MIN;
+  // later batches retain an indexed range predicate and the exact native cursor.
+  const firstStmt = params.db.prepare(`${projection}${ordering}`);
+  const stmt = params.db.prepare(`${projection} AND rowid > ?${ordering}`);
+  firstStmt.setReadBigInts(true);
+  stmt.setReadBigInts(true);
   type ChunkEmbeddingRow = {
-    rowid: number | bigint;
-    embedding: string;
+    rowid: bigint;
+    embedding: Uint8Array;
   };
   const snippet = resolveSnippetProjection("text", params.snippetMaxChars);
   const payloadStmt = params.db.prepare(
@@ -457,19 +459,27 @@ export async function searchChunksByEmbedding(params: {
   };
 
   const topResults: SearchRowResult[] = [];
-  let lastRowid = 0;
+  let lastRowid: bigint | undefined;
   while (true) {
-    const batch = stmt.iterate(
-      ...providerModels,
-      lastRowid,
-      ...params.sourceFilter.params,
-      FALLBACK_VECTOR_BATCH_SIZE,
+    const batch = (
+      lastRowid === undefined
+        ? firstStmt.iterate(
+            ...providerModels,
+            ...params.sourceFilter.params,
+            FALLBACK_VECTOR_BATCH_SIZE,
+          )
+        : stmt.iterate(
+            ...providerModels,
+            lastRowid,
+            ...params.sourceFilter.params,
+            FALLBACK_VECTOR_BATCH_SIZE,
+          )
     ) as IterableIterator<ChunkEmbeddingRow>;
     let batchSize = 0;
     for (const row of batch) {
       batchSize += 1;
-      lastRowid = typeof row.rowid === "bigint" ? Number(row.rowid) : row.rowid;
-      const score = cosineSimilarity(params.queryVec, parseEmbedding(row.embedding));
+      lastRowid = row.rowid;
+      const score = cosineSimilarity(params.queryVec, decodeMemoryEmbedding(row.embedding));
       const lowest = topResults.at(-1);
       if (
         Number.isFinite(score) &&

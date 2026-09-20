@@ -36,11 +36,12 @@ const CHILD_SCRIPT = String.raw`
   import { DatabaseSync } from "node:sqlite";
   import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
   import { migrateLegacyMediaPersistence } from "./src/infra/state-migrations.media-persistence.ts";
+  import { readSqliteTranscriptPayload, sqliteTranscriptPayloadColumns } from "./scripts/lib/sqlite-transcript-payload.mjs";
   const path = resolveOpenClawAgentSqlitePath({ agentId: "main", env: process.env });
   let db = new DatabaseSync(path, { readOnly: true });
-  const read = (session, seq) => db.prepare(
-    "SELECT event_json FROM transcript_events WHERE session_id=? AND seq=?",
-  ).get(session, seq).event_json;
+  const read = (session, seq) => readSqliteTranscriptPayload(db.prepare(
+    "SELECT " + sqliteTranscriptPayloadColumns(db) + " FROM transcript_events WHERE session_id=? AND seq=?",
+  ).get(session, seq));
   const readTrajectory = (seq) => db.prepare(
     "SELECT event_json FROM trajectory_runtime_events WHERE session_id=? AND seq=?",
   ).get("large-corpus-0", seq).event_json;
@@ -89,6 +90,7 @@ const SESSION_WINDOW_CHILD_SCRIPT = String.raw`
 const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   import { DatabaseSync } from "node:sqlite";
   import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
+  import { readSqliteTranscriptPayload, sqliteTranscriptPayloadColumns } from "./scripts/lib/sqlite-transcript-payload.mjs";
   const originalPrepare = DatabaseSync.prototype.prepare;
   const cursorSelects = new Set();
   let mediaSelects = 0;
@@ -120,9 +122,9 @@ const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
       .all(...bindings)
       .map((row) => row.detail);
   });
-  const transcript = JSON.parse(db.prepare(
-    "SELECT event_json FROM transcript_events WHERE session_id=? AND seq=0",
-  ).get("sparse-0").event_json);
+  const transcript = JSON.parse(readSqliteTranscriptPayload(db.prepare(
+    "SELECT " + sqliteTranscriptPayloadColumns(db) + " FROM transcript_events WHERE session_id=? AND seq=0",
+  ).get("sparse-0")));
   const trajectory = JSON.parse(db.prepare(
     "SELECT event_json FROM trajectory_runtime_events WHERE session_id=? AND seq=0",
   ).get("sparse-${SPARSE_EVENT_SESSION_COUNT - 1}").event_json);

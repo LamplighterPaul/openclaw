@@ -2858,6 +2858,18 @@ describe("SQLite transcript reader byte budget", () => {
           maxEventBytes: jsonlSize - 1,
         }),
       ).toThrow(/transcript store is too large to export/u);
+      if (encoding !== "UTF-8") {
+        // Exact UTF-8 metadata must not inherit the legacy identities' native-byte conversion.
+        const { db } = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
+        db.prepare(
+          "UPDATE transcript_events SET event_utf8_bytes = ? WHERE session_id = ? AND seq = 2",
+        ).run(Buffer.byteLength(JSON.stringify(events[2]), "utf8"), sessionId);
+        const mixed = { agentId: "main", sessionId, sessionKey, storePath };
+        expect(loadTranscriptEventsSync({ ...mixed, maxEventBytes: jsonlSize })).toEqual(events);
+        expect(() => loadTranscriptEventsSync({ ...mixed, maxEventBytes: jsonlSize - 1 })).toThrow(
+          /transcript store is too large to export/u,
+        );
+      }
     },
   );
 });

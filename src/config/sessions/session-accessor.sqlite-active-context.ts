@@ -30,8 +30,13 @@ import {
   MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
   normalizeVisibleMessageLimit,
 } from "./session-accessor.sqlite-visible-cursor.js";
-import { projectResetBoundaryNavigationSql } from "./session-model-context-projection.js";
+import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import {
+  transcriptEventJsonSql,
+  transcriptEventNavigationSql,
+  transcriptEventResetNavigationSql,
+} from "./transcript-payload.js";
 
 export type SessionTranscriptBoundedActiveContext = {
   activeLeafEntryId: string | null;
@@ -163,9 +168,9 @@ function readUnindexedLogicalParents(
       .select((eb) => [
         "active.event_seq",
         "previous.event_seq as parent_seq",
-        projectResetBoundaryNavigationSql(eb.fn.coalesce("parent.event_json", eb.val("null"))).as(
-          "parent_json",
-        ),
+        eb.fn
+          .coalesce(transcriptEventResetNavigationSql("parent"), eb.val("null"))
+          .as("parent_json"),
       ])
       .where("active.session_id", "=", projection.resolved.sessionId)
       .where("active.event_seq", "in", contextSequences),
@@ -218,7 +223,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
         .select("seq")
         .where(
           /* kysely-allow-raw: the canonical transcript event type is stored inside event_json. */
-          sql<string>`json_extract(event_json, '$.type')`,
+          sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
           "=",
           "session",
         )
@@ -231,7 +236,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
           transcript
             .select(
               /* kysely-allow-raw: reject an oversized header before acquiring its JSON payload. */
-              sql<number>`OCTET_LENGTH(event_json) + 1`.as("serialized_bytes"),
+              sql<number>`${transcriptEventReadBytesSql()} + 1`.as("serialized_bytes"),
             )
             .where("seq", "=", header.seq),
         )!.serialized_bytes
@@ -259,7 +264,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
         .select([
           "active.event_seq",
           /* kysely-allow-raw: active-context byte caps exclude rows before fetching or parsing. */
-          sql<number>`OCTET_LENGTH(event.event_json) + 1`.as("serialized_bytes"),
+          sql<number>`${transcriptEventReadBytesSql("event")} + 1`.as("serialized_bytes"),
         ])
         .where("active.session_id", "=", projection.resolved.sessionId)
         .$if(fence !== undefined, (query) =>
@@ -325,7 +330,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
           "boundary.seq",
           "boundary.boundary_count",
           /* kysely-allow-raw: count boundaries without carrying payloads through the window query. */
-          sql<number>`OCTET_LENGTH(event.event_json) + 1`.as("serialized_bytes"),
+          sql<number>`${transcriptEventReadBytesSql("event")} + 1`.as("serialized_bytes"),
         ]),
     );
     let boundaryCount = boundary?.boundary_count ?? 0;
@@ -366,7 +371,9 @@ export function readSessionTranscriptBoundedActiveContextCore(
         ? []
         : executeSqliteQuerySync(
             projection.database.db,
-            transcript.select(["seq", "event_json"]).where("seq", "in", payloadSequences),
+            transcript
+              .select(["seq", transcriptEventJsonSql(projection.database.db).as("event_json")])
+              .where("seq", "in", payloadSequences),
           ).rows
       ).map((row) => [row.seq, JSON.parse(row.event_json)]),
     );

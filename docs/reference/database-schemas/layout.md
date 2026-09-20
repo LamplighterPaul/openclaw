@@ -15,6 +15,13 @@ title: "Database layout"
 
 The task registry uses the shared state database. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
 
+In agent schema 22, `transcript_events` retains original event JSON as either
+`event_json` TEXT or `event_zstd` BLOB, with byte counts and bounded navigation
+metadata for compressed rows. Use the transcript accessor or supported exports
+to reconstruct history; selecting `event_json` alone omits compressed events.
+Memory chunk/cache embeddings are little-endian Float64 BLOBs. See
+[compact agent payload storage](/reference/database-schemas/agent-schema-history#compact-agent-payload-storage).
+
 Task registry restore normalizes legacy task run and child-session identifiers
 before hydrating records, so scoped mutations can use their existing indexes.
 The repair runs in the existing write transaction once per registry restore;

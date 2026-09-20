@@ -1,5 +1,6 @@
 // Memory Core tests cover manager embedding cache plugin behavior.
 import {
+  encodeMemoryEmbedding,
   ensureMemoryIndexSchema,
   requireNodeSqlite,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -45,10 +46,14 @@ describe("memory embedding cache", () => {
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(columns).not.toHaveBeenCalled();
       expect(
-        db.prepare("SELECT hash, dims, updated_at FROM memory_embedding_cache ORDER BY hash").all(),
+        db
+          .prepare(
+            "SELECT hash, dims, updated_at, typeof(embedding) AS type, length(embedding) AS bytes FROM memory_embedding_cache ORDER BY hash",
+          )
+          .all(),
       ).toEqual([
-        { hash: "a", dims: 4096, updated_at: 123 },
-        { hash: "b", dims: 2, updated_at: 123 },
+        { hash: "a", dims: 4096, updated_at: 123, type: "blob", bytes: 4096 * 8 },
+        { hash: "b", dims: 2, updated_at: 123, type: "blob", bytes: 16 },
       ]);
 
       const cached = loadMemoryEmbeddingCache({
@@ -112,15 +117,18 @@ describe("memory embedding cache", () => {
       expect(
         db.prepare("SELECT hash, embedding FROM memory_embedding_cache ORDER BY hash").all(),
       ).toEqual([
-        { hash: "a", embedding: "[4]" },
-        { hash: "b", embedding: "[2]" },
+        { hash: "a", embedding: encodeMemoryEmbedding([4]) },
+        { hash: "b", embedding: encodeMemoryEmbedding([2]) },
       ]);
     } finally {
       db.close();
     }
   });
 
-  it("loads provider-declared alias cache rows without accepting arbitrary identities", () => {
+  it.each([
+    { name: "truncated", embedding: new Uint8Array([1, 2, 3]) },
+    { name: "non-finite", embedding: new Uint8Array([0, 0, 0, 0, 0, 0, 240, 127]) },
+  ])("regenerates $name cache data while respecting provider alias priority", ({ embedding }) => {
     const db = createDb();
     try {
       upsertMemoryEmbeddingCache({
@@ -135,7 +143,7 @@ describe("memory embedding cache", () => {
         ],
       });
       db.prepare("UPDATE memory_embedding_cache SET embedding = ? WHERE hash = ?").run(
-        "invalid JSON",
+        embedding,
         "invalid",
       );
       upsertMemoryEmbeddingCache({

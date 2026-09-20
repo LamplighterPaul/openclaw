@@ -1,5 +1,12 @@
 # SQLite Release Fixtures
 
+`openclaw-agent-schema-v14.sql` is the exact agent DDL from tag
+`v2026.7.2-beta.4`; `openclaw-agent-schema-v15.sql` is the exact DDL from
+commit `509a5f0373764`. Their media-migration tests retain the original SHA-256
+contracts. `openclaw-agent-schema-v21.sql` freezes commit
+`f69617aa3818d805889692918ee7f51bef666597` before the schema-22 storage cutover.
+Historical fixtures read these sources without deriving old tables from current DDL.
+
 `openclaw-state-v2026.7.1-2.sqlite.gz` is a deterministic fixture for the
 shared state database created by OpenClaw tag `v2026.7.1-2` at commit
 `0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c`.

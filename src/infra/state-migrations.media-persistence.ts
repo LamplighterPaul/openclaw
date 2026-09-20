@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sql } from "kysely";
 import {
   decodeSessionArchiveBytes,
   encodeSessionArchiveContent,
@@ -12,12 +13,22 @@ import {
 import type { TranscriptEvent } from "../config/sessions/session-accessor.sqlite-contract.js";
 import { resolveSqliteTranscriptArchiveDirectory } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { rewriteSqliteTranscriptEventRowsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
+import { reconcileSessionTranscriptIndexInTransaction } from "../config/sessions/session-transcript-index.js";
+import { transcriptEventReadBytesSql } from "../config/sessions/session-transcript-read-bytes.js";
+import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
 import {
   canonicalizePersistedUserMessageMedia,
   hasMeaningfulRetiredMediaCarrier,
 } from "../media/media-facts.js";
-import { AGENT_MEDIA_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
-import { invalidateOpenClawAgentDatabaseIntegrityBeforeMutation } from "../state/openclaw-agent-db-lease.js";
+import {
+  AGENT_MEDIA_SCHEMA_VERSION,
+  AGENT_STORAGE_SCHEMA_VERSION,
+} from "../state/openclaw-agent-db-contract.js";
+import {
+  assertAgentDatabaseMaintenanceAuthority,
+  invalidateOpenClawAgentDatabaseIntegrityBeforeMutation,
+  renewAgentDatabaseMaintenanceAuthorityIfPresent,
+} from "../state/openclaw-agent-db-lease.js";
 import { assertOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-maintenance.js";
 import {
   registerOpenClawAgentDatabase,
@@ -36,11 +47,13 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
+import { withLegacyAgentStorageSchema } from "../state/openclaw-agent-storage-schema.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
 import { VERSION } from "../version.js";
 import { formatErrorMessage } from "./errors.js";
 import {
   executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   clearNodeSqliteKyselyCacheForDatabase,
 } from "./kysely-sync.js";
@@ -90,14 +103,20 @@ type ArchiveSourceSnapshot = {
 function forEachMediaEventBatch(params: {
   database: DatabaseSync;
   table: "trajectory_runtime_events" | "transcript_events";
+  legacyTextStorage?: boolean;
   visit: (rows: Array<{ event_json: string; seq: number; session_id: string }>) => void;
 }): void {
   const db = getNodeSqliteKysely<MediaMigrationDatabase>(params.database);
+  const eventJson =
+    params.table === "transcript_events" && !params.legacyTextStorage
+      ? transcriptEventJsonSql(params.database)
+      : sql.ref<string>(`${params.table}.event_json`);
   let cursor: { seq: number; sessionId: string } | undefined;
   while (true) {
     let query = db
       .selectFrom(params.table)
-      .select(["session_id", "seq", "event_json"])
+      .select(["session_id", "seq"])
+      .select(eventJson.as("event_json"))
       .orderBy("session_id", "asc")
       .orderBy("seq", "asc")
       .limit(MEDIA_MIGRATION_ROW_BATCH_SIZE);
@@ -127,6 +146,8 @@ function scanTranscriptRows(params: {
   database: DatabaseSync;
   pathname: string;
   writer?: OpenClawAgentDatabase;
+  legacyTextStorage: boolean;
+  onChangedSession?: (sessionId: string) => void;
 }): number {
   const { database, pathname, writer } = params;
   const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
@@ -135,6 +156,7 @@ function scanTranscriptRows(params: {
   forEachMediaEventBatch({
     database,
     table: "transcript_events",
+    legacyTextStorage: params.legacyTextStorage,
     visit: (rows) => {
       const sessionIds = [...new Set(rows.map((row) => row.session_id))];
       const sessionKeys = new Map(
@@ -168,6 +190,7 @@ function scanTranscriptRows(params: {
         if (lastChangedSessionId !== row.session_id) {
           lastChangedSessionId = row.session_id;
           changedSessions += 1;
+          params.onChangedSession?.(row.session_id);
         }
         const rewrites = rewritesBySession.get(row.session_id) ?? [];
         rewrites.push({
@@ -189,6 +212,7 @@ function scanTranscriptRows(params: {
             writer,
             { agentId: writer.agentId, path: pathname, sessionId, sessionKey },
             rewrites,
+            { legacyTextStorage: params.legacyTextStorage },
           );
         }
       }
@@ -260,21 +284,49 @@ function scanTrajectoryRows(params: {
   return changedRows;
 }
 
-function readMediaSourceVersion(database: DatabaseSync) {
+function readMediaSourceVersion(database: DatabaseSync, legacyTextStorage: boolean) {
   const dataVersionRow = database.prepare("PRAGMA data_version").get();
-  const counts = database
-    .prepare(
-      `SELECT
-        (SELECT COUNT(*) FROM transcript_events) AS transcript_rows,
-        (SELECT COALESCE(SUM(LENGTH(event_json)), 0) FROM transcript_events) AS transcript_bytes,
-        (SELECT CAST(COALESCE(SUM(created_at), 0) AS TEXT) FROM transcript_events) AS transcript_created_at,
-        (SELECT COUNT(*) FROM trajectory_runtime_events) AS trajectory_rows,
-        (SELECT COALESCE(SUM(LENGTH(event_json)), 0) FROM trajectory_runtime_events) AS trajectory_bytes`,
-    )
-    .get();
+  const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
+  /* kysely-allow-raw: native byte sums only classify data-version drift; exact CAS still compares decoded text. */
+  const eventBytes = legacyTextStorage
+    ? sql<number>`octet_length(${sql.ref("transcript_events.event_json")})`
+    : transcriptEventReadBytesSql();
+  const counts = executeSqliteQueryTakeFirstSync(
+    database,
+    db.selectNoFrom((eb) => [
+      eb
+        .selectFrom("transcript_events")
+        .select((row) => row.fn.countAll<number>().as("count"))
+        .as("transcript_rows"),
+      eb
+        .selectFrom("transcript_events")
+        .select((row) => row.fn.coalesce(row.fn.sum<number>(eventBytes), row.val(0)).as("bytes"))
+        .as("transcript_bytes"),
+      eb
+        .selectFrom("transcript_events")
+        .select((row) =>
+          row
+            .cast<string>(row.fn.coalesce(row.fn.sum<number>("created_at"), row.val(0)), "text")
+            .as("created_at"),
+        )
+        .as("transcript_created_at"),
+      eb
+        .selectFrom("trajectory_runtime_events")
+        .select((row) => row.fn.countAll<number>().as("count"))
+        .as("trajectory_rows"),
+      eb
+        .selectFrom("trajectory_runtime_events")
+        .select((row) =>
+          row.fn
+            .coalesce(row.fn.sum<number>(row.fn<number>("length", ["event_json"])), row.val(0))
+            .as("bytes"),
+        )
+        .as("trajectory_bytes"),
+    ]),
+  );
   const number = (value: unknown): number =>
     typeof value === "bigint" ? Number(value) : typeof value === "number" ? value : 0;
-  const count = (key: string): number => number(isRecord(counts) ? counts[key] : undefined);
+  const count = (key: keyof NonNullable<typeof counts>): number => number(counts?.[key]);
   return {
     dataVersion: number(isRecord(dataVersionRow) ? dataVersionRow.data_version : undefined),
     trajectoryBytes: count("trajectory_bytes"),
@@ -385,7 +437,9 @@ async function migrateAgentDatabase(params: {
     const schemaMode = userVersion < OPENCLAW_AGENT_SCHEMA_VERSION ? "legacy" : "current";
     const schemaSql =
       schemaMode === "legacy"
-        ? withLegacySessionParticipantsSchema(OPENCLAW_AGENT_SCHEMA_SQL)
+        ? withLegacySessionParticipantsSchema(
+            withLegacyAgentStorageSchema(OPENCLAW_AGENT_SCHEMA_SQL),
+          )
         : OPENCLAW_AGENT_SCHEMA_SQL;
     // Remove after 2026-10-12: drop the v15-to-v16 media cutover once schema 16 is the support floor.
     if (userVersion === PREVIOUS_MEDIA_SCHEMA_VERSION) {
@@ -396,11 +450,16 @@ async function migrateAgentDatabase(params: {
     }
     assertOpenClawAgentSchemaContains(database, params.pathname, schemaSql, schemaMode);
     const mediaSchemaUpgrade = userVersion === PREVIOUS_MEDIA_SCHEMA_VERSION;
+    const legacyTextStorage = userVersion < AGENT_STORAGE_SCHEMA_VERSION;
     if (!mediaSchemaUpgrade) {
       const detected = runSqliteDeferredTransactionSync(
         database,
         () => ({
-          rewrittenSessions: scanTranscriptRows({ database, pathname: params.pathname }),
+          rewrittenSessions: scanTranscriptRows({
+            database,
+            pathname: params.pathname,
+            legacyTextStorage,
+          }),
           rewrittenTrajectoryRows: scanTrajectoryRows({
             database,
             pathname: params.pathname,
@@ -416,13 +475,14 @@ async function migrateAgentDatabase(params: {
       }
     }
 
-    const sourceVersion = readMediaSourceVersion(database);
+    const sourceVersion = readMediaSourceVersion(database, legacyTextStorage);
+    const changedLegacySessions = new Set<string>();
     params.beforeTransaction?.();
     const owner = createMigrationDatabaseHandle(database, params.agentId, params.pathname);
     const rewritten = runSqliteImmediateTransactionSync(
       database,
       () => {
-        const currentSourceVersion = readMediaSourceVersion(database);
+        const currentSourceVersion = readMediaSourceVersion(database, legacyTextStorage);
         if (currentSourceVersion.dataVersion !== sourceVersion.dataVersion) {
           throw new Error(
             mediaSourceDriftMessage(params.pathname, sourceVersion, currentSourceVersion),
@@ -432,6 +492,12 @@ async function migrateAgentDatabase(params: {
           database,
           pathname: params.pathname,
           writer: owner,
+          legacyTextStorage,
+          onChangedSession: legacyTextStorage
+            ? (sessionId) => {
+                changedLegacySessions.add(sessionId);
+              }
+            : undefined,
         });
         const rewrittenTrajectoryRows = scanTrajectoryRows({
           database,
@@ -462,6 +528,24 @@ async function migrateAgentDatabase(params: {
       },
     );
     ensureOpenClawAgentDatabaseSchema(database, { agentId: params.agentId, path: params.pathname });
+    if (changedLegacySessions.size > 0) {
+      runSqliteImmediateTransactionSync(
+        database,
+        () => {
+          assertAgentDatabaseMaintenanceAuthority();
+          for (const sessionId of changedLegacySessions) {
+            renewAgentDatabaseMaintenanceAuthorityIfPresent();
+            reconcileSessionTranscriptIndexInTransaction(database, sessionId);
+          }
+          assertAgentDatabaseMaintenanceAuthority();
+        },
+        {
+          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+          databaseLabel: params.pathname,
+          operationLabel: "media-persistence-projection",
+        },
+      );
+    }
     const rewrittenArchives = await migrateArchives();
     refreshAgentDatabasePlannerStatistics(database);
     return {

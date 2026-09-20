@@ -23,7 +23,8 @@ import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.
 // The v4 session/transcript flip and main's v2 memory-identity
 // change is folded in structure-gated migrations, so v2 main DBs and
 // pre-merge v4 flip DBs both converge on this schema.
-export const OPENCLAW_AGENT_SCHEMA_VERSION = 21;
+export const OPENCLAW_AGENT_SCHEMA_VERSION = 22;
+export const AGENT_STORAGE_SCHEMA_VERSION = 22;
 export const AGENT_MEDIA_SCHEMA_VERSION = 17;
 export const CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION = 21;
 

@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveLegacyTranscriptPaths } from "../config/sessions/legacy-store-inspection.js";
 import { withSqliteSessionImportStage } from "../config/sessions/session-accessor.sqlite-import-stage.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
 import { readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { executeSqliteQueryTakeFirstSync, iterateSqliteQuerySync } from "../infra/kysely-sync.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
@@ -178,7 +179,7 @@ export function verifyHistoricalMigrationArtifact(params: {
             database.db,
             db
               .selectFrom("transcript_events")
-              .select("event_json")
+              .select(transcriptEventJsonSql(database.db).as("event_json"))
               .where("session_id", "=", sessionId),
           )) {
             stage.addSeen(event.event_json);

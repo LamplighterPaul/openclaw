@@ -33,6 +33,7 @@ import {
 } from "./session-entry-projection.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
+import { transcriptEventJsonSql } from "./transcript-payload.js";
 import {
   SESSION_TOTAL_TOKENS_VERSION,
   type InternalSessionEntry as SessionEntry,
@@ -354,7 +355,7 @@ function readSqliteTranscriptRowsForFork(
   const db = getSessionKysely(database.db);
   const query = db
     .selectFrom("transcript_events")
-    .select(["event_json", "seq"])
+    .select([transcriptEventJsonSql(database.db).as("event_json"), "seq"])
     .where("session_id", "=", source.sessionId)
     .orderBy("seq", "asc");
   const rows = executeSqliteQuerySync(
