@@ -50,6 +50,7 @@ import {
   type NodeHostManifest,
   type NodeHostInventory,
 } from "./runtime-manifest.js";
+import { createNodeHostUpdatePause } from "./runtime-update-pause.js";
 import { scanNodeHostedSkills } from "./skills.js";
 export type { NodeHostInventory } from "./runtime-manifest.js";
 
@@ -77,7 +78,7 @@ type ActiveNodeHostRuntime = {
   handleInput(invokeId: string, seq: number, payloadJSON: string): void;
   cancel(invokeId: string): void;
   cancelAll(): void;
-  tryPauseForUpdate(): boolean;
+  tryPauseForUpdate(): Promise<boolean>;
   resumeAfterUpdate(): void;
   updateGatewayConnection(connection?: {
     url: string;
@@ -340,7 +341,6 @@ export async function prepareNodeHostRuntime(params?: {
     }) {
       const mcpAbort = new AbortController();
       let closing = false;
-      let pausedForUpdate = false;
       let inFlightInvokes = 0;
       let connectionGeneration = 0;
       let closePromise: Promise<void> | undefined;
@@ -470,9 +470,20 @@ export async function prepareNodeHostRuntime(params?: {
       if (onManifestChanged) {
         refreshAvailability();
       }
+      const updatePause = createNodeHostUpdatePause({
+        hasLocalActiveWork: () =>
+          closing ||
+          !mcpStartupComplete ||
+          inFlightInvokes > 0 ||
+          pendingPluginDisconnectCleanups > 0 ||
+          pluginDisconnectCleanupFailed ||
+          hasRegisteredNodeHostCommandActiveWork() ||
+          workerCleanupIncomplete,
+        hasWorkerActiveWork: () => workerSupervisor?.hasActiveWork(),
+      });
       return {
         async invoke(frame) {
-          if (pausedForUpdate) {
+          if (updatePause.isPaused) {
             await client
               .request("node.invoke.result", {
                 id: frame.id,
@@ -665,26 +676,8 @@ export async function prepareNodeHostRuntime(params?: {
               pendingPluginDisconnectCleanups -= 1;
             });
         },
-        tryPauseForUpdate() {
-          if (
-            closing ||
-            pausedForUpdate ||
-            !mcpStartupComplete ||
-            inFlightInvokes > 0 ||
-            pendingPluginDisconnectCleanups > 0 ||
-            pluginDisconnectCleanupFailed ||
-            hasRegisteredNodeHostCommandActiveWork() ||
-            workerCleanupIncomplete ||
-            workerSupervisor?.hasActiveWork()
-          ) {
-            return false;
-          }
-          pausedForUpdate = true;
-          return true;
-        },
-        resumeAfterUpdate() {
-          pausedForUpdate = false;
-        },
+        tryPauseForUpdate: updatePause.tryPauseForUpdate,
+        resumeAfterUpdate: updatePause.resumeAfterUpdate,
         updateGatewayConnection(connection) {
           gatewayConnection = connection;
         },
