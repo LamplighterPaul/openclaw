@@ -9,6 +9,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import {
   type AgentWaitResult,
   isTerminalAgentWaitTimeout,
@@ -172,13 +173,6 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
 
-    // A confirmed source reply already reached the requester through the target's
-    // message tool. Re-entering either peer would duplicate that reply and can
-    // bounce the requester's response back into the target session.
-    if (sourceReplyDelivered) {
-      return;
-    }
-
     // A same-session send is a human-facing source-channel reply, not a true
     // agent-to-agent announcement. Asking the same session to decide whether to
     // announce can re-run the same prompt and duplicate source-reply side effects.
@@ -188,6 +182,33 @@ export async function runSessionsSendA2AFlow(params: {
       rightKey: params.targetSessionKey,
       rightAgentId: params.targetAgentId,
     });
+    // Only same-session source delivery proves that the requester already saw the
+    // reply. For distinct peers, the receipt can belong to the target's channel.
+    if (sameSessionSourceReply && sourceReplyDelivered) {
+      return;
+    }
+    // Control UI sessions are human-facing conversations, not autonomous peers.
+    // Deliver the target result to the requester once, but do not feed the
+    // requester's human-facing response back into the target session.
+    if (
+      params.requesterSessionKey &&
+      !sameSessionSourceReply &&
+      isInternalMessageChannel(params.requesterChannel)
+    ) {
+      await runAgentStep({
+        agentId: params.requesterAgentId,
+        sessionKey: params.requesterSessionKey,
+        message: latestReply,
+        extraSystemPrompt: `Another session returned the result of your earlier sessions_send request. ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION} This result is delivered once; your response will not be sent back to the target session.`,
+        timeoutMs: params.announceTimeoutMs,
+        sourceAgentId: params.targetAgentId,
+        sourceSessionKey: params.targetSessionKey,
+        sourceTool: "sessions_send",
+        callGateway: gatewayCall,
+      });
+      return;
+    }
+
     const announceTarget = await resolveAnnounceTarget({
       sessionKey: params.targetSessionKey,
       displayKey: params.displayKey,

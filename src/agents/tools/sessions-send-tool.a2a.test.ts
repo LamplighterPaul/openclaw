@@ -330,12 +330,11 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
   );
 
   it.each(["inline", "delayed"] as const)(
-    "does not bounce a delivered %s source reply between distinct sessions",
+    "delivers an internal %s reply once without bouncing it back to the target",
     async (mode) => {
       agentWaitMock.mockResolvedValueOnce({
         status: "ok",
         terminalReply: { disposition: "visible", text: "Already delivered source reply" },
-        terminalReceipt: deliveredReceipt("run-delivered-cross-session-source"),
       });
 
       await runSessionsSendA2AFlow({
@@ -348,14 +347,44 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
         requesterSessionKey: "agent:main:webchat:direct:requester",
         requesterChannel: "webchat",
         ...(mode === "inline"
-          ? { roundOneReply: "Already delivered source reply", sourceReplyDelivered: true as const }
+          ? { roundOneReply: "Already delivered source reply" }
           : { waitRunId: "run-delivered-cross-session-source" }),
       });
 
-      expect(runAgentStep).not.toHaveBeenCalled();
+      expect(runAgentStep).toHaveBeenCalledOnce();
+      expect(firstMockArg(vi.mocked(runAgentStep), "agent step")).toMatchObject({
+        sessionKey: "agent:main:webchat:direct:requester",
+        message: "Already delivered source reply",
+        sourceSessionKey: "agent:main:webchat:direct:target",
+        sourceTool: "sessions_send",
+      });
       expect(gatewayCalls).toEqual([]);
     },
   );
+
+  it("preserves requester delivery when the target delivered only to its own channel", async () => {
+    await runSessionsSendA2AFlow({
+      targetAgentId: "main",
+      targetSessionKey: "agent:main:discord:channel:target-room",
+      displayKey: "agent:main:discord:channel:target-room",
+      message: "Test message",
+      announceTimeoutMs: 10_000,
+      maxPingPongTurns: 5,
+      requesterSessionKey: "agent:main:webchat:direct:requester",
+      requesterChannel: "webchat",
+      roundOneReply: "Reply already posted to the target channel",
+      sourceReplyDelivered: true,
+    });
+
+    expect(runAgentStep).toHaveBeenCalledOnce();
+    expect(firstMockArg(vi.mocked(runAgentStep), "agent step")).toMatchObject({
+      sessionKey: "agent:main:webchat:direct:requester",
+      message: "Reply already posted to the target channel",
+      sourceSessionKey: "agent:main:discord:channel:target-room",
+      sourceTool: "sessions_send",
+    });
+    expect(gatewayCalls.find((call) => call.method === "send")).toBeUndefined();
+  });
 
   it("does not run the announce decider for same-session sends without an announce target", async () => {
     await runSessionsSendA2AFlow({
