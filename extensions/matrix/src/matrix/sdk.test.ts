@@ -17,14 +17,7 @@ import {
 import { EventStatus } from "matrix-js-sdk/lib/models/event-status.js";
 import { SyncApi, SyncState } from "matrix-js-sdk/lib/sync.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import type {
-  OpenAsyncKeyedStoreOptions,
-  PluginStateKeyedStore,
-} from "openclaw/plugin-sdk/plugin-state-runtime";
-import {
-  createPluginStateKeyedStoreForTests,
-  resetPluginStateStoreForTests,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 // Matrix tests cover sdk plugin behavior.
@@ -37,11 +30,11 @@ import { SqliteBackedMatrixSyncStore } from "./client/file-sync-store.js";
 import {
   readMatrixIdbSnapshotJson,
   readMatrixRecoveryKeyStateForPathAsync,
-  type MatrixSnapshotStateRuntime,
 } from "./crypto-state-store.js";
 import { MatrixDecryptBridge } from "./sdk/decrypt-bridge.js";
 import { clearAllIndexedDbState } from "./sdk/idb-persistence.test-helpers.js";
 import { LogService } from "./sdk/logger.js";
+import { holdRecoveryKeyPersistence } from "./sdk/recovery-key-persistence.test-helpers.js";
 
 vi.mock("./sdk/joined-room-encryption.js", () => ({
   reconcileJoinedRoomEncryption: vi.fn(async () => undefined),
@@ -131,31 +124,6 @@ function expectSomeMockCallOptions(
 
 async function readStoredRecoveryKey(recoveryKeyPath: string) {
   return readMatrixRecoveryKeyStateForPathAsync(recoveryKeyPath, getMatrixRuntime().state);
-}
-
-function holdRecoveryKeyPersistence() {
-  const admitted = createDeferred<void>();
-  const release = createDeferred<void>();
-  const stateRuntime: MatrixSnapshotStateRuntime = {
-    openKeyedStore<T>(options: OpenAsyncKeyedStoreOptions): PluginStateKeyedStore<T> {
-      const store = createPluginStateKeyedStoreForTests<T>("matrix", options);
-      const compareAndApply = store.compareAndApply;
-      if (!compareAndApply) {
-        throw new Error("expected current SQLite comparison support");
-      }
-      return {
-        ...store,
-        compareAndApply: async (key, comparison, intent) => {
-          if (options.namespace === "recovery-key" && intent.action === "set") {
-            admitted.resolve();
-            await release.promise;
-          }
-          return await compareAndApply(key, comparison, intent);
-        },
-      };
-    },
-  };
-  return { admitted, release, stateRuntime };
 }
 
 function captureRecoveryCacheWrite() {
@@ -1140,12 +1108,13 @@ describe("MatrixClient request hardening", () => {
   });
 
   it.each([
-    { operation: "delete", revokeAuthority: false },
-    { operation: "unsupported algorithm", revokeAuthority: false },
-    { operation: "delete", revokeAuthority: true },
+    { operation: "delete", revokeAuthority: false, failNetworkOnce: false },
+    { operation: "unsupported algorithm", revokeAuthority: false, failNetworkOnce: false },
+    { operation: "delete", revokeAuthority: true, failNetworkOnce: false },
+    { operation: "delete", revokeAuthority: false, failNetworkOnce: true },
   ] as const)(
-    "settles recovery persistence before SDK secret $operation dispatch (revoke authority: $revokeAuthority)",
-    async ({ operation, revokeAuthority }) => {
+    "settles recovery persistence before SDK secret $operation dispatch (revoke authority: $revokeAuthority, transient network failure: $failNetworkOnce)",
+    async ({ operation, revokeAuthority, failNetworkOnce }) => {
       clearMatrixSyncApiForNeverStartedClient();
       const recoveryKeyPath = path.join(
         tempDirs.make("matrix-recovery-dispatch-"),
@@ -1159,8 +1128,13 @@ describe("MatrixClient request hardening", () => {
           throw authorityError;
         }
       });
+      let networkFailurePending = failNetworkOnce;
       const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         expect((await readStoredRecoveryKey(recoveryKeyPath))?.keyId).toBe("SSSSKEY");
+        if (networkFailurePending) {
+          networkFailurePending = false;
+          throw new TypeError("Synthetic network interruption");
+        }
         return Response.json(
           init?.method === "GET" && requestUrl(input).includes("m.secret_storage.key.")
             ? { algorithm: "unsupported.synthetic" }
@@ -1180,7 +1154,9 @@ describe("MatrixClient request hardening", () => {
         "matrix-js-sdk/lib/matrix.js",
       );
       const sdkClient = sdk.createClient(options);
+      const accountDataRequest = vi.spyOn(sdkClient.http, "authedRequest");
       let operationSettled: Promise<PromiseSettledResult<void>[]> | undefined;
+      let outcome: PromiseSettledResult<void> | undefined;
       try {
         await persistence.admitted.promise;
         const pending = sdkClient.secretStorage.store(
@@ -1188,7 +1164,10 @@ describe("MatrixClient request hardening", () => {
           operation === "delete" ? null : "synthetic-secret",
           ["SSSSKEY"],
         );
-        operationSettled = Promise.allSettled([pending]);
+        operationSettled = Promise.allSettled([pending]).then((results) => {
+          outcome = results[0];
+          return results;
+        });
         await setImmediate();
         expect(fetchMock).not.toHaveBeenCalled();
         expect(getSecretStorageKey).not.toHaveBeenCalled();
@@ -1196,7 +1175,16 @@ describe("MatrixClient request hardening", () => {
         authorized = !revokeAuthority;
         persistence.release.resolve();
         if (revokeAuthority) {
+          const firstRequest = accountDataRequest.mock.results[0];
+          if (firstRequest?.type !== "return") {
+            throw new Error("expected the real SDK account-data request");
+          }
+          await Promise.allSettled([firstRequest.value]);
+          await setImmediate();
+          // A settled authority rejection must not leave the SDK waiting in network backoff.
+          expect(outcome?.status).toBe("rejected");
           await expect(pending).rejects.toThrow(authorityError.message);
+          await expect(pending).rejects.toMatchObject({ name: "AbortError" });
           expect(fetchMock).not.toHaveBeenCalled();
         } else {
           await pending;
@@ -1207,6 +1195,9 @@ describe("MatrixClient request hardening", () => {
             throw new Error("expected SDK JSON account-data body");
           }
           expect(JSON.parse(body)).toEqual(operation === "delete" ? {} : { encrypted: {} });
+          if (failNetworkOnce) {
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+          }
         }
         expect(getSecretStorageKey).not.toHaveBeenCalled();
         expect((await readStoredRecoveryKey(recoveryKeyPath))?.keyId).toBe("SSSSKEY");
@@ -1214,6 +1205,7 @@ describe("MatrixClient request hardening", () => {
         authorized = true;
         persistence.release.resolve();
         await operationSettled;
+        accountDataRequest.mockRestore();
         sdkClient.stopClient();
         await client.stopWithoutPersist();
         getSecretStorageKey.mockRestore();
