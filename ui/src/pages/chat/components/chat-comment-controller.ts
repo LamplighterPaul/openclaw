@@ -1,19 +1,14 @@
 import { nothing, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
 import { focusWithoutTooltip } from "../../../components/tooltip.ts";
-import { t } from "../../../i18n/index.ts";
-import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import type { ChatAttachment, ChatSelectionAnnotation } from "../../../lib/chat/chat-types.ts";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
-import { showToast } from "../../../lib/toast.ts";
 import { OpenClawLightDomContentsElement } from "../../../lit/openclaw-element.ts";
 import { releaseDisplacedChatAttachmentPayloads } from "../attachment-payload-store.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import { resolveChatCommentAnchor } from "./chat-comment-anchor.ts";
 import { createChatSelectionAttachment } from "./chat-selection-attachment.ts";
 import { showChatAnnotationEditor } from "./chat-selection-popup.ts";
-
-registerChatMessageMetadataEnglish();
 
 type CommentAttachment = ChatAttachment & { selectionAnnotation: ChatSelectionAnnotation };
 
@@ -188,7 +183,6 @@ class ChatCommentController extends OpenClawLightDomContentsElement {
       current.filter((item) => !ids.has(item.id)),
     );
     this.focusComposer();
-    showToast({ message: t("chat.messages.annotationsRemoved") });
   }
 
   private deleteComment(id: string, preview: HTMLElement | null = null) {

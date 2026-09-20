@@ -1,6 +1,7 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
+import "../../../lib/toast.ts";
 import {
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayload,
@@ -97,6 +98,8 @@ describe("comment actions outside the transcript", () => {
       .click();
     expect(fixture.attachments()).toEqual([]);
     expect(fixture.input()).toBeNull();
+    await fixture.toast.updateComplete;
+    expect(fixture.toast.querySelector("[role=status]")).toBeNull();
   });
 
   it("removes all current-session comments while retaining other attachments and their payloads", async () => {
@@ -125,8 +128,7 @@ describe("comment actions outside the transcript", () => {
     expect(getChatAttachmentDataUrl(fixture.attachment)).toBeNull();
     expect(getChatAttachmentDataUrl(second)).toBeNull();
     await fixture.toast.updateComplete;
-    expect(fixture.toast.querySelector("[role=status]")?.textContent).toContain("Comments removed");
-    expect(fixture.toast.querySelector(".app-toast__action")).toBeNull();
+    expect(fixture.toast.querySelector("[role=status]")).toBeNull();
     expect(getChatAttachmentDataUrl(otherSession)).not.toBeNull();
     expect(fixture.input()).toBeNull();
   });

@@ -156,6 +156,7 @@ suite.define(() => {
         const deletes = preview.getByRole("button", { name: "Delete comment", exact: true });
         await deletes.first().click();
         await expect.poll(() => chip.textContent()).toContain("1 comment");
+        expect(await page.locator("openclaw-toast-host [role=status]").count()).toBe(0);
         // Shrinking above the chip moves the first row away from a stationary pointer.
         await page.waitForTimeout(250);
         expect(await preview.isVisible()).toBe(true);
@@ -206,10 +207,8 @@ suite.define(() => {
           .poll(() => composer.evaluate((element) => element === document.activeElement))
           .toBe(true);
         expect(await composer.inputValue()).toBe("Preserve the draft.");
-        const toast = page.getByRole("status").filter({ hasText: "Comments removed" });
-        await toast.waitFor({ state: "visible" });
+        expect(await page.locator("openclaw-toast-host [role=status]").count()).toBe(0);
         await page.screenshot({ path: `${suite.artifactDir}/comments-cleared.png` });
-        expect(await toast.getByRole("button", { name: "Undo", exact: true }).count()).toBe(0);
         await page.getByRole("button", { name: "Send message", exact: true }).click();
         const request = await gateway.waitForRequest("chat.send");
         expect((request.params as { attachments?: unknown[] }).attachments ?? []).toHaveLength(0);
