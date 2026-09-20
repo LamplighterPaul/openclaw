@@ -1,4 +1,5 @@
 import { html, nothing } from "lit";
+import { resolveModelRuntimeRoute } from "../../../../../src/shared/agent-runtime-display.js";
 import { icons } from "../../../components/icons.ts";
 import {
   formatRawProviderLabel,
@@ -124,6 +125,19 @@ export function renderChatModelPickerOption(params: {
     params.selectedAgentRuntime,
   );
   const modelLabel = formatModelLabel(params.entry);
+  const route = resolveModelRuntimeRoute(params.entry.provider, params.entry.agentRuntimeId);
+  const runtimeLabel = route
+    ? t(`chat.modelControls.routes.${route}.label`)
+    : params.entry.agentRuntimeId
+      ? formatAgentRuntimeLabel(params.entry.agentRuntimeId)
+      : "";
+  const routeDetail = route ? t(`chat.modelControls.routes.${route}.detail`) : "";
+  const detail = [
+    routeDetail,
+    params.entry.supportsTools === false ? t("chat.modelControls.chatOnlyHelp") : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   // A session with a recorded pin (even one pinned to the default's own value)
   // can always return to Default when the default model is unavailable: the row
   // commits the reset, not that model. Otherwise an unavailable default routes
@@ -135,13 +149,10 @@ export function renderChatModelPickerOption(params: {
       params.entry.unavailableReason === "auth-failed");
   const onModelSetup = needsAuth ? params.onModelSetup : undefined;
   const modelMeta = needsAuth
-    ? ""
-    : [
-        formatModelContextMeta(params.entry),
-        params.entry.agentRuntimeId ? formatAgentRuntimeLabel(params.entry.agentRuntimeId) : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
+    ? route
+      ? runtimeLabel
+      : ""
+    : [formatModelContextMeta(params.entry), runtimeLabel].filter(Boolean).join(" · ");
   const accessibleStatus = needsAuth
     ? t("modelSetup.candidates.signInNeeded")
     : params.entry.unavailableReason === "unsupported-runtime"
@@ -155,9 +166,13 @@ export function renderChatModelPickerOption(params: {
     data-chat-model-runtime=${params.entry.agentRuntime ?? nothing}
     data-chat-model-default=${params.entry.isDefault ? "true" : nothing}
     data-chat-model-index=${params.index}
-    data-chat-model-keywords=${
-      params.entry.isDefault ? t("chat.modelControls.default").toLocaleLowerCase() : nothing
-    }
+    data-chat-model-keywords=${[
+      params.entry.isDefault ? t("chat.modelControls.default") : "",
+      runtimeLabel,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLocaleLowerCase()}
     data-chat-model-name=${modelLabel.toLocaleLowerCase()}
     data-chat-model-provider-label=${providerDisplayLabel(
       params.entry.provider,
@@ -166,14 +181,7 @@ export function renderChatModelPickerOption(params: {
     hidden
     aria-selected=${selected ? "true" : "false"}
     title=${accessibleStatus || nothing}
-    aria-label=${[
-      modelLabel,
-      params.entry.agentRuntimeId ? formatAgentRuntimeLabel(params.entry.agentRuntimeId) : "",
-      accessibleStatus,
-      params.entry.supportsTools === false ? t("chat.modelControls.chatOnlyHelp") : "",
-    ]
-      .filter(Boolean)
-      .join(". ")}
+    aria-label=${[modelLabel, runtimeLabel, accessibleStatus].filter(Boolean).join(". ")}
     type="button"
     ?disabled=${params.disabled || (params.entry.disabled && !onModelSetup && !resetsPin)}
     data-chat-model-setup=${onModelSetup ? "true" : nothing}
@@ -238,10 +246,8 @@ export function renderChatModelPickerOption(params: {
       }
     </span>
   </button>`;
-  return params.entry.supportsTools === false
-    ? html`<openclaw-tooltip .content=${t("chat.modelControls.chatOnlyHelp")}>
-        ${option}
-      </openclaw-tooltip>`
+  return detail
+    ? html`<openclaw-tooltip .content=${detail}> ${option} </openclaw-tooltip>`
     : option;
 }
 

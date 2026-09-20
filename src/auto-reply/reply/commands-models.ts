@@ -13,7 +13,10 @@ import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
 import { resolveModelAuthLabel } from "../../agents/model-auth-label.js";
-import { createModelCatalogDecisions } from "../../agents/model-catalog-decisions.js";
+import {
+  createModelCatalogDecisions,
+  resolveCatalogDecisionRuntime,
+} from "../../agents/model-catalog-decisions.js";
 import {
   resolveLogicalModelCatalogEntryState,
   resolveLogicalVisibleModelCatalog,
@@ -50,6 +53,7 @@ import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveProviderChannelLoginChoice } from "../../plugins/provider-login-options.js";
+import { resolveModelRuntimeRoute } from "../../shared/agent-runtime-display.js";
 import { formatProviderLoginCommand } from "../../shared/provider-login-command.js";
 import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
 import type { ReplyPayload } from "../types.js";
@@ -68,6 +72,12 @@ const CUSTOM_MODEL_SETUP_GUIDANCE =
   "Set up this connection with the custom-provider guide: https://docs.openclaw.ai/concepts/model-providers/custom-providers";
 export const MODEL_PICKER_CHANGED_MESSAGE =
   "Available models changed. Open /models and choose again.";
+const MODEL_PROVIDER_ROUTE_DETAILS = {
+  claudeCli:
+    "Claude CLI runs through Claude Code using its native login or a selected saved account. An explicitly selected API-key account has separate API billing; CLI does not mean free or subscription-only.",
+  anthropicConfigured:
+    "Anthropic models can use the API or Claude CLI. Check each model's route label and selected account: API-key usage is billed separately from a Claude subscription.",
+};
 
 type ModelsCommandSessionEntry = Partial<
   Pick<
@@ -99,7 +109,12 @@ export type ModelsProviderData = {
 };
 
 type ModelsProviderMenu = { available: number; notice: string };
-type ModelReadiness = Pick<ModelAuthAvailabilityEvaluation, "availability" | "unavailableReason">;
+type ModelReadiness = Pick<
+  ModelAuthAvailabilityEvaluation,
+  "availability" | "unavailableReason"
+> & {
+  runtimeId?: string;
+};
 
 type PreparedModelsProviderData = ModelsProviderData & {
   modelCatalog: ModelCatalogEntry[];
@@ -220,7 +235,7 @@ async function projectPreparedModelsProviderData(
   if (!authStore) {
     throw new Error("Model catalog owner omitted its auth store");
   }
-  const decisions = createModelCatalogDecisions({
+  const decisionParams = {
     cfg,
     agentId: owner.agentId ?? agentId ?? "main",
     agentDir: owner.agentDir,
@@ -239,7 +254,18 @@ async function projectPreparedModelsProviderData(
         : undefined,
     profileProvider: options.sessionEntry?.providerOverride ?? options.sessionEntry?.modelProvider,
     runtimeOverride: options.sessionEntry?.agentRuntimeOverride,
-  });
+  };
+  const decisions = createModelCatalogDecisions(decisionParams);
+  // Selecting the default clears the session runtime pin; other model callbacks retain it.
+  const defaultDecisions =
+    decisionParams.runtimeOverride && resolveModelRuntimeRoute(resolvedDefault.provider)
+      ? createModelCatalogDecisions({ ...decisionParams, runtimeOverride: undefined })
+      : decisions;
+  const decisionsForEntry = (entry: Pick<ModelCatalogEntry, "provider" | "id">) =>
+    normalizeProviderId(entry.provider) === resolvedDefault.provider &&
+    entry.id === resolvedDefault.model
+      ? defaultDecisions
+      : decisions;
   // Configured/default rows may remain visible without auth, but must not
   // reintroduce a model that its provider route contract rejected.
   const incompatibleModelKeys = new Set<string>();
@@ -252,9 +278,10 @@ async function projectPreparedModelsProviderData(
           if (!entry) {
             return false;
           }
+          const selectionDecisions = decisionsForEntry(entry);
           return (
-            decisions.evaluateNative(entry, await decisions.evaluateEntry(entry)).availability ===
-            true
+            selectionDecisions.evaluateNative(entry, await selectionDecisions.evaluateEntry(entry))
+              .availability === true
           );
         };
   const visibleCatalog = await resolveLogicalVisibleModelCatalog({
@@ -270,13 +297,23 @@ async function projectPreparedModelsProviderData(
     routePolicy: openAIModelCatalogRoutePolicy,
     routeVariants: snapshot.routeVariants,
     evaluateEntry: async (entry, routeVariants) => {
-      const evaluation = decisions.evaluateNative(
+      const selectionDecisions = decisionsForEntry(entry);
+      const evaluation = selectionDecisions.evaluateNative(
         entry,
-        await decisions.evaluateEntry(entry, routeVariants),
+        await selectionDecisions.evaluateEntry(entry, routeVariants),
       );
       modelAvailability.set(`${normalizeProviderId(entry.provider)}/${entry.id}`, {
         availability: evaluation.availability,
         unavailableReason: evaluation.unavailableReason,
+        runtimeId: resolveModelRuntimeRoute(entry.provider)
+          ? resolveCatalogDecisionRuntime({
+              cfg,
+              agentId: owner.agentId ?? agentId ?? "main",
+              entry,
+              evaluation,
+              pluginRegistry: owner.pluginRegistry,
+            })?.id
+          : undefined,
       });
       if (evaluation.routeResolution?.kind === "incompatible") {
         incompatibleModelKeys.add(resolveModelCatalogIdentityKey(entry));
@@ -457,23 +494,39 @@ async function projectPreparedModelsProviderData(
         (row) => normalizeProviderId(row.provider) === provider && row.id === model,
       );
       const authEntry = entry ?? { provider, id: model, name: model };
+      const selectionDecisions = decisionsForEntry(authEntry);
       const variants = snapshot.routeVariants.filter(
         (row) => resolveModelCatalogIdentityKey(row) === resolveModelCatalogIdentityKey(authEntry),
       );
       if (!modelAvailability.has(`${provider}/${model}`)) {
-        const evaluation = decisions.evaluateNative(
+        const evaluation = selectionDecisions.evaluateNative(
           authEntry,
-          await decisions.evaluateEntry(authEntry, variants.length ? variants : [authEntry]),
+          await selectionDecisions.evaluateEntry(
+            authEntry,
+            variants.length ? variants : [authEntry],
+          ),
         );
         modelAvailability.set(`${provider}/${model}`, {
           availability: evaluation.availability,
           unavailableReason: evaluation.unavailableReason,
+          runtimeId: resolveModelRuntimeRoute(provider)
+            ? resolveCatalogDecisionRuntime({
+                cfg,
+                agentId: owner.agentId ?? agentId ?? "main",
+                entry: authEntry,
+                evaluation,
+                pluginRegistry: owner.pluginRegistry,
+              })?.id
+            : undefined,
         });
       }
       if (!entry) {
         continue;
       }
-      const runtimes = await decisions.runtimeChoices(entry, variants.length ? variants : [entry]);
+      const runtimes = await selectionDecisions.runtimeChoices(
+        entry,
+        variants.length ? variants : [entry],
+      );
       if (!runtimes) {
         continue;
       }
@@ -625,12 +678,22 @@ function buildModelsMenu(data: {
   const byProvider = new Map<string, ModelsProviderMenu>();
   for (const [id, models] of data.byProvider) {
     const notices = new Set<string>();
+    const providerRoute = resolveModelRuntimeRoute(id);
+    if (providerRoute === "claudeCli" || providerRoute === "anthropicConfigured") {
+      notices.add(MODEL_PROVIDER_ROUTE_DETAILS[providerRoute]);
+    }
     let available = 0;
     const loginSupported = data.loginProviders.has(id);
     const loginCommand = formatProviderLoginCommand(id);
     for (const model of models) {
       const key = `${id}/${model}`;
       const state = data.modelAvailability.get(key)!;
+      const route = resolveModelRuntimeRoute(id, state.runtimeId);
+      const routeLabel =
+        route === "claudeCli" ? "Claude CLI" : route === "anthropicApi" ? "API" : "";
+      if (routeLabel) {
+        modelNames.set(key, `${routeLabel} · ${data.modelNames.get(key) ?? model}`);
+      }
       if (state.availability === true) {
         available += 1;
         continue;
@@ -661,7 +724,7 @@ function buildModelsMenu(data: {
                 ? `Connect with ${loginCommand}, or choose another model.`
                 : CUSTOM_MODEL_SETUP_GUIDANCE;
       }
-      modelNames.set(key, `${label} — ${data.modelNames.get(key) ?? model}`);
+      modelNames.set(key, `${label} — ${modelNames.get(key) ?? model}`);
       notices.add(`${id}: ${label}. ${recovery}`);
     }
     byProvider.set(id, { available, notice: [...notices].join("\n") });
