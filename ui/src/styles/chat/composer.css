@@ -1899,7 +1899,8 @@ html[dir="rtl"] .chat-attachment-loading > span {
   flex: 0 0 auto;
 }
 
-.chat-controls__model-settings .chat-controls__inline-select-trigger {
+/* The model trigger fills its shrinkable wrapper; effort keeps its content width. */
+.chat-controls__model-settings .chat-controls__effort-trigger {
   width: auto;
 }
 
