@@ -1,5 +1,7 @@
-import { SHARED_AUTH_STORE_STATE_KEY } from "../agents/auth-profiles/path-resolve.js";
-import { readAuthProfileRows } from "../agents/auth-profiles/sqlite-json.js";
+import {
+  readAuthProfileRows,
+  SHARED_AUTH_STORE_STATE_KEY,
+} from "../agents/auth-profiles/sqlite-json.js";
 import { isMissingDatabasePath } from "../agents/auth-profiles/sqlite-read-pool.js";
 import type { AuthProfileRowRead } from "../agents/auth-profiles/types.js";
 import {
@@ -104,6 +106,8 @@ import {
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import { readConfigMachineState } from "./config-machine-state.js";
+import { isOnboardingRecommendationWriteCommand } from "./onboarding-recommendations.contract.js";
+import { executeOnboardingRecommendationCommand } from "./onboarding-recommendations.kernel.js";
 import { executeAgentDatabaseCleanupCommand } from "./openclaw-agent-execution-cleanup.worker.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
@@ -133,7 +137,7 @@ const log = createSubsystemLogger("state/worker");
 export function executeSharedStateCommand(
   command: Exclude<
     SqliteWorkerCommand<Operations>,
-    { type: "plugins.metadata.read" | "database.inspectIdle" }
+    { type: "plugins.metadata.read" | "database.inspectIdle" | "stateLease.acquire" }
   >,
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
@@ -313,6 +317,13 @@ export function executeSharedStateCommand(
       command.input.generation,
       readStableSqliteFileGeneration(context.databasePath),
     );
+  }
+  if (isOnboardingRecommendationWriteCommand(command)) {
+    return executeOnboardingRecommendationCommand(command, {
+      database: open(),
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
   }
   if (command.type === "userPreferences.read" || command.type === "userPreferences.write") {
     return executeUserPreferenceCommand(command, {
