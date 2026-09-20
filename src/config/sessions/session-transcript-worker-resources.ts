@@ -36,6 +36,7 @@ import type {
   SessionRowPresenceWorkerInput,
   SessionTranscriptHistoryWorkerInput,
   SessionTranscriptHydrationWorkerInput,
+  SessionTranscriptCurrentTurnEntryWorkerInput,
   SessionTranscriptWorkerReply,
   SessionUsageCacheWorkerInput,
 } from "./session-transcript-worker.types.js";
@@ -49,7 +50,8 @@ export const historyPages = new WorkerTaskPool<
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
-  | SessionTranscriptHydrationWorkerInput,
+  | SessionTranscriptHydrationWorkerInput
+  | SessionTranscriptCurrentTurnEntryWorkerInput,
   SessionTranscriptWorkerReply<
     | "history-page"
     | "session-row-presence"
@@ -59,6 +61,7 @@ export const historyPages = new WorkerTaskPool<
     | "session-identity-evidence"
     | "usage-cache"
     | "transcript-hydration"
+    | "current-turn-entry"
   >
 >({
   workerUrl,
@@ -366,6 +369,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             | "session-identity-evidence"
             | "usage-cache"
             | "transcript-hydration"
+            | "current-turn-entry"
           >(reply);
           if (
             typeof result === "boolean" ||
