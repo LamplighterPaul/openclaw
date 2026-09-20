@@ -97,12 +97,7 @@ import {
 } from "../sessions/session-state-events.kernel.js";
 import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
 import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
-import {
-  readSkillCuratorStateInDatabase,
-  recordSkillUsageInDatabase,
-} from "../skills/workshop/curator.kernel.js";
-import { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
-import { ensureSkillWorkshopSchemaInDatabase } from "../skills/workshop/store-sqlite-schema.js";
+import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
@@ -387,14 +382,8 @@ export function executeSharedStateCommand(
       : read(open().db);
   }
   const database = open();
-  if (command.type === "skills.curator.read") {
-    return readSkillCuratorStateInDatabase(database, command.input.skillFiles);
-  }
-  if (command.type === "skills.usage.record") {
-    return runOpenClawStateWriteTransaction(
-      (current) => recordSkillUsageInDatabase(current, command.input),
-      { database, path: context.databasePath, env: getSqliteWorkerStateContext().environment },
-    );
+  if (skillWorkshop.isSkillWorkshopCommand(command)) {
+    return skillWorkshop.executeSkillWorkshopCommand(command, database, context.databasePath);
   }
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
@@ -504,10 +493,6 @@ export function executeSharedStateCommand(
   }
   if (command.type === "deliveryQueue.failPending") {
     return executePendingDeliveryFailure(command.input, writeOptions);
-  }
-  if (command.type === "workshop.events.list") {
-    ensureSkillWorkshopSchemaInDatabase(database, writeOptions);
-    return listStoredSkillProposalEventsInDatabase(database.db, command.input);
   }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
