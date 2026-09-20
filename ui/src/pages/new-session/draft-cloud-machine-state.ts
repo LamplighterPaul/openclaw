@@ -30,8 +30,13 @@ export class DraftCloudMachineState {
     return this.overrides.get(profileId)?.os ?? "";
   }
 
-  selection(profileId: string) {
-    return { machineClass: this.resolve(profileId), os: this.resolveOs(profileId) } as const;
+  selection(profileId: string, profiles: readonly DraftCloudProfile[]) {
+    const profile = profiles.find((candidate) => candidate.id === profileId);
+    const os = profile ? this.selectedOs(profile) : this.resolveOs(profileId);
+    // Submit the choice shown by the picker, not a potentially different backend default.
+    const machineClass =
+      this.resolve(profileId) || (profile && defaultCloudMachine(profile, os)?.id) || "";
+    return { machineClass, os } as const;
   }
 
   selectedOs(profile: DraftCloudProfile): string {
@@ -60,7 +65,7 @@ export class DraftCloudMachineState {
       cloudMachinesForOs(profile, os.id).some((machine) => machine.id === machineClass)
         ? machineClass
         : undefined,
-      os.id === defaultCloudOs(profile) ? undefined : os.id,
+      os.id,
     );
     onChange?.();
     return true;
@@ -79,13 +84,7 @@ export class DraftCloudMachineState {
     if (disabled || !machine) {
       return false;
     }
-    this.applyPending(
-      profileId,
-      defaultCloudMachine(profile, this.selectedOs(profile))?.id === machine.id
-        ? undefined
-        : machine.id,
-      this.resolveOs(profileId),
-    );
+    this.applyPending(profileId, machine.id, this.selectedOs(profile));
     onChange?.();
     return true;
   }
