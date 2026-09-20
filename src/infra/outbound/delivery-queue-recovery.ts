@@ -1348,9 +1348,8 @@ export async function drainPendingDeliveriesCore(
     shouldContinue?: () => boolean;
   },
   internalDeliver?: InternalRecoveryDeliver,
-  capturedState?: DeliveryQueueStateContext,
+  stateContext = captureDeliveryQueueStateContext(params.stateDir),
 ): Promise<void> {
-  const stateContext = capturedState ?? captureDeliveryQueueStateContext(params.stateDir);
   const opts = { ...params, stateDir: stateContext.stateDir };
   const drained = await recoveryCoordinator.withDrain(opts.drainKey, async () => {
     const now = Date.now();
@@ -1400,9 +1399,8 @@ export async function recoverPendingDeliveries(
     shouldContinue?: () => boolean;
   },
   internalDeliver?: InternalRecoveryDeliver,
-  capturedState?: DeliveryQueueStateContext,
+  stateContext = captureDeliveryQueueStateContext(params.stateDir),
 ): Promise<DeliveryRecoverySummary> {
-  const stateContext = capturedState ?? captureDeliveryQueueStateContext(params.stateDir);
   const opts = { ...params, stateDir: stateContext.stateDir };
   const pending = await loadUnfinishedDeliveries(opts.stateDir, stateContext);
   if (pending.length === 0) {
