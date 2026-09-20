@@ -22,6 +22,7 @@ export function bindTabNavigation(root: HTMLElement, onSelect: (tab: TabId) => v
   root.querySelectorAll<HTMLElement>("[data-tab]").forEach((node) => {
     node.addEventListener("focus", () => revealTab(node));
     node.addEventListener("click", () => {
+      // SAFETY: renderTabBar emits these data-tab values from its typed TabId list.
       const nextTab = node.dataset.tab as TabId | undefined;
       if (nextTab) {
         onSelect(nextTab);
