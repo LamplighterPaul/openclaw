@@ -75,16 +75,19 @@ silently execute the larger whole config. Uneven bounded chunks use their own
 file counts with the existing cost rates; native Vitest shards retain equal
 shares of the complete config estimate.
 
-Native database-worker roots share a 20-file CI job ceiling, including every
-co-located envelope. The existing root registry owns classification; migrated
-files retain their original plugin's job and process limits. This partitions the
-185-file native envelope from [run 35176277297](https://github.com/openclaw/openclaw/actions/runs/35176277297)
+All files routed to the database-worker config share a 20-file CI job ceiling,
+including every co-located envelope. The effective config owns classification;
+migrated files also retain any tighter original plugin job and process limits.
+This partitions the 185-file native envelope from [run 35176277297](https://github.com/openclaw/openclaw/actions/runs/35176277297)
 into ten non-overlapping envelopes. That run continued passing tests for more
 than 58 minutes before the job deadline; it is a lower bound, not a completed
-family timing sample. The ceiling prevents the default cost estimate from
-packing the chunks back together. Fork isolation, process lifetimes, worker
-limits, timeouts, and the 50-job fallback cap stay unchanged. Hosted CI must
-establish the resulting job durations.
+family timing sample. In [run 35477485803](https://github.com/openclaw/openclaw/actions/runs/35477485803),
+root-only counting allowed 149 database-worker files in one serial job; its
+test step took 27 minutes 30 seconds. The ceiling now prevents both oversized
+migrated envelopes and their reassembly during cost packing. Fork isolation,
+process file limits, worker limits, timeouts, and the 50-job fallback cap stay
+unchanged. Cost estimates remain advisory; hosted CI must establish the resulting
+job durations.
 
 Precise and fallback plugin envelopes share the same packing owner and a 240-second aggregate estimated budget per job, including multiple envelopes of the same config. Members retain compatible runner/dist requirements and run one at a time; total cost bounds packing rather than a pair limit. Each envelope retains its original child process, environment, native shard arguments and include scope, including process-bounded Codex, Matrix and Telegram work. Runtime-preparing envelopes remain separate. Co-location preserves each original file/process bound and native shard partition; a physical job may contain several such envelopes. Workers, timeouts and serial stop-on-failure behavior stay unchanged. Costs retain the larger complete-family rate from [run 33676780376](https://github.com/openclaw/openclaw/actions/runs/33676780376) and [run 33747183683](https://github.com/openclaw/openclaw/actions/runs/33747183683), rounded up per counting file without lowering prior floors. Both cohorts used two CPUs and two workers; counting inputs include the config-owned exclusions, and runtime preparation is charged separately. Repacking the retained 78 envelopes with these rates projects 30 jobs instead of 32. The largest sum of matching observed child spans is 340.128 seconds. This is a forecast across different source revisions, not measured combined-job latency; native CI must verify elapsed time and cleanup within the eight-minute end-to-end objective.
 

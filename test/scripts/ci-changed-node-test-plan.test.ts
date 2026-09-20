@@ -1424,19 +1424,20 @@ describe("CI changed Node test plan", () => {
         true,
       );
     }
-    const nativeFiles = new Set(listExtensionTestFilesForRoots(databaseWorkerExtensionTestRoots));
     for (const [index, shard] of shards.entries()) {
       for (const other of shards.slice(index + 1)) {
-        const combinedNativeFiles = fallbackGroups([shard, other])
-          .flatMap((group) => group.includePatterns ?? [])
-          .filter((file) => nativeFiles.has(file));
+        const combinedWorkerFiles = fallbackGroups([shard, other])
+          .filter((group) =>
+            group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+          )
+          .flatMap((group) => group.includePatterns ?? []);
         const canShareJob =
           !shard.pretestBuildMode &&
           !other.pretestBuildMode &&
           shard.runner === other.runner &&
           shard.requiresDist === other.requiresDist &&
           shard.predictedSeconds! + other.predictedSeconds! <= 240 &&
-          combinedNativeFiles.length <= 20;
+          combinedWorkerFiles.length <= 20;
         expect(canShareJob, `${shard.shardName} and ${other.shardName} fit one job`).toBe(false);
       }
     }
@@ -1548,15 +1549,16 @@ describe("CI changed Node test plan", () => {
       ...databaseWorkerExtensionTestRoots,
       ...databaseWorkerExtensionTestFiles,
     ]);
-    const nativeFiles = new Set(listExtensionTestFilesForRoots(databaseWorkerExtensionTestRoots));
     for (const group of workerGroups) {
-      expect(
-        group.includePatterns?.filter((file) => nativeFiles.has(file)).length,
-      ).toBeLessThanOrEqual(20);
+      expect(group.includePatterns?.length).toBeLessThanOrEqual(20);
     }
     for (const shard of shards) {
-      const files = fallbackGroups([shard]).flatMap((group) => group.includePatterns ?? []);
-      expect(files.filter((file) => nativeFiles.has(file)).length).toBeLessThanOrEqual(20);
+      const files = fallbackGroups([shard])
+        .filter((group) =>
+          group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+        )
+        .flatMap((group) => group.includePatterns ?? []);
+      expect(files.length, shard.shardName).toBeLessThanOrEqual(20);
     }
     expect(workerGroups.length).toBeGreaterThan(1);
     expect(workerGroups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(

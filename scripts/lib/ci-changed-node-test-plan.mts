@@ -1,7 +1,6 @@
 import { existsSync, lstatSync } from "node:fs";
 import path from "node:path";
 import { pluginContractPatterns } from "../../test/vitest/vitest.contracts-paths.mjs";
-import { isDatabaseWorkerExtensionRoot } from "../../test/vitest/vitest.extension-database-workers-paths.mjs";
 import {
   isPluginControlUiPath,
   isUiBrowserTestFile,
@@ -31,7 +30,8 @@ import {
   type NodeTestShardGroup,
 } from "./ci-node-test-plan.mts";
 import {
-  NATIVE_DATABASE_WORKER_TEST_JOB_FILE_LIMIT,
+  DATABASE_WORKER_CONFIG,
+  DATABASE_WORKER_TEST_JOB_FILE_LIMIT,
   estimateExtensionTestCost,
   listExtensionTestFilesForRoots,
   resolveExtensionTestConfig,
@@ -560,12 +560,10 @@ export function createChangedExtensionFallbackShards(
 function packChangedExtensionConfigShards(
   shards: ChangedExtensionConfigShard[],
 ): ChangedNodeTestShard[] {
-  const nativeWorkerFileCounts = new Map(
+  const workerFileCounts = new Map(
     shards.map((shard) => [
       shard,
-      shard.includePatterns?.filter((file) =>
-        isDatabaseWorkerExtensionRoot(file.split("/").slice(0, 2).join("/")),
-      ).length ?? 0,
+      shard.configs.includes(DATABASE_WORKER_CONFIG) ? (shard.includePatterns?.length ?? 0) : 0,
     ]),
   );
   const bins = packNodeTestGroups(
@@ -575,11 +573,11 @@ function packChangedExtensionConfigShards(
     // Each envelope retains its own child process. Share only the checkout;
     // runtime preparation stays separate from other configs' readers.
     (bin, shard) =>
-      // Cost packing must not recreate the oversized native worker envelope.
+      // Count the effective config, including files migrated from other plugins.
       bin.reduce(
-        (count, entry) => count + (nativeWorkerFileCounts.get(entry) ?? 0),
-        nativeWorkerFileCounts.get(shard) ?? 0,
-      ) <= NATIVE_DATABASE_WORKER_TEST_JOB_FILE_LIMIT &&
+        (count, entry) => count + (workerFileCounts.get(entry) ?? 0),
+        workerFileCounts.get(shard) ?? 0,
+      ) <= DATABASE_WORKER_TEST_JOB_FILE_LIMIT &&
       !shard.pretestBuildMode &&
       bin.every(
         (entry) =>
