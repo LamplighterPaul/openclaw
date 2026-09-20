@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
+import {
+  isSqliteNativeOpenFailure,
+  withSqliteNativeOpen,
+} from "../infra/sqlite-error-diagnostics.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
 import { receiveSqliteWorkerReply } from "../infra/sqlite-worker-broker-reply.js";
 import type { Job } from "../infra/sqlite-worker-broker.types.js";
@@ -41,6 +45,25 @@ function roundTrip(error: Error): Error {
 }
 
 describe("shared-state worker error transport", () => {
+  it.each([undefined, "SQLITE_IOERR"])(
+    "preserves native-open provenance before lease dispatch (code: %s)",
+    (code) => {
+      const original = Object.assign(new Error("native open refused"), { code });
+      expect(() =>
+        withSqliteNativeOpen(() => {
+          throw original;
+        }),
+      ).toThrow(original);
+
+      const decoded = roundTrip(original);
+      expect(decoded).not.toBe(original);
+      expect(decoded).toMatchObject({ message: original.message });
+      expect("code" in decoded ? decoded.code : undefined).toBe(code);
+      expect(isSqliteNativeOpenFailure(decoded)).toBe(true);
+      expect(hydrateOpenClawStateWorkerError(decoded)).toBe(decoded);
+    },
+  );
+
   it.each(
     [RangeError, SyntaxError, TypeError, SkillUploadRequestError].flatMap((ErrorType) =>
       [false, true].map((aggregate) => ({ ErrorType, name: ErrorType.name, aggregate })),
@@ -76,8 +99,7 @@ describe("shared-state worker error transport", () => {
 
   it.each([
     "OPENCLAW_STATE_LEASE_INVALID_INPUT",
-    "OPENCLAW_STATE_LEASE_TIMEOUT",
-    "STATE_LEASE_BUSY",
+    "OPENCLAW_STATE_LEASE_HELD",
     "OPENCLAW_STATE_LEASE_ABORTED",
     "OPENCLAW_STATE_LEASE_LOST",
     "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
@@ -442,6 +464,7 @@ describe("shared-state worker error transport", () => {
       Object.assign(new Error("syntax imitation"), { name: "SyntaxError" }),
       Object.assign(new Error("type imitation"), { name: "TypeError" }),
       Object.assign(new Error("upload imitation"), { name: "SkillUploadRequestError" }),
+      Object.assign(new Error("native open imitation"), { nativeOpen: true, code: "SQLITE_IOERR" }),
       imitation,
       new AggregateError([imitation], "ordinary aggregate"),
       { cause: new OpenClawStateOwnershipError("nested object") },
@@ -520,6 +543,7 @@ describe("shared-state worker error transport", () => {
     { version: 1, root: 0, nodes: [{ ...validNode, cause: { ref: 1 } }] },
     { version: 1, root: 0, nodes: [{ ...validNode, cause: { value: {} } }] },
     { version: 1, root: 0, nodes: [{ ...validNode, code: {} }] },
+    { version: 1, root: 0, nodes: [{ ...validNode, nativeOpen: false }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: -1 }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: 0.5 }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: 2 ** 31 }] },
@@ -537,7 +561,7 @@ describe("shared-state worker error transport", () => {
         {
           type: "state-lease",
           leaseCode: "OPENCLAW_STATE_LEASE_LOST",
-          code: "OPENCLAW_STATE_LEASE_TIMEOUT",
+          code: "OPENCLAW_STATE_LEASE_HELD",
           name: "OpenClawStateLeaseError",
           message: "mismatched lease classification",
         },
