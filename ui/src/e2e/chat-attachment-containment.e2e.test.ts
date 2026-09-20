@@ -9,6 +9,7 @@ suite.define(() => {
   it.each(
     ["new", "chat"].flatMap((route) =>
       [
+        { width: 320, height: 568 },
         { width: 390, height: 844 },
         { width: 1050, height: 764 },
         { width: 844, height: 390 },
