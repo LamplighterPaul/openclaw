@@ -1055,7 +1055,7 @@ describe("test-projects args", () => {
     expect(plans).toHaveLength(1);
   });
 
-  it("keeps extension production changes on their owning test lanes", () => {
+  it("keeps extension production changes on the owning extension lane", () => {
     const changedPaths = ["extensions/discord/src/monitor/message-handler.ts"];
 
     expect(
