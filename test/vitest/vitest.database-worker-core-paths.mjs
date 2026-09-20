@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/agents/media-generation-task-status.cold.test.ts",
   "src/state/onboarding-recommendations.test.ts",
   "src/commands/onboard-recommendations.test.ts",
   "src/wizard/setup.app-recommendations.test.ts",
