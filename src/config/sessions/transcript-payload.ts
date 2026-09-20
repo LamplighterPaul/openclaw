@@ -3,9 +3,11 @@ import { sql, type Expression, type RawBuilder } from "kysely";
 import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
+  prepareSqliteQuerySync,
   prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
+import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
   projectModelContextEventSql,
   projectModelContextNavigationSql,
@@ -27,6 +29,46 @@ export type TranscriptPayloadRecord = {
   event_utf8_bytes: number | null;
   navigation_json: string | null;
 };
+
+/** Physical payload writes participate in the transcript owner's admitted transaction. */
+export function createTranscriptEventInserter(database: DatabaseSync, sessionId: string) {
+  const insert = prepareSqliteQuerySync<
+    TranscriptPayloadRecord & { seq: number; createdAt: number }
+  >(database, (parameter) =>
+    getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
+      .insertInto("transcript_events")
+      .values({
+        session_id: sessionId,
+        seq: parameter((row) => row.seq),
+        event_json: parameter((row) => row.event_json),
+        event_zstd: parameter((row) => row.event_zstd),
+        event_utf8_bytes: parameter((row) => row.event_utf8_bytes),
+        navigation_json: parameter((row) => row.navigation_json),
+        created_at: parameter((row) => row.createdAt),
+      }),
+  );
+  return (row: { seq: number; eventJson: string; createdAt: number }) =>
+    insert({ ...row, ...prepareTranscriptPayload(database, row.eventJson) });
+}
+
+export function createTranscriptPayloadUpdater(database: DatabaseSync, sessionId: string) {
+  return prepareSqliteQuerySync<TranscriptPayloadRecord & { seq: number }>(database, (parameter) =>
+    getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
+      .updateTable("transcript_events")
+      .set({
+        event_json: parameter((row) => row.event_json),
+        event_zstd: parameter((row) => row.event_zstd),
+        event_utf8_bytes: parameter((row) => row.event_utf8_bytes),
+        navigation_json: parameter((row) => row.navigation_json),
+      })
+      .where("session_id", "=", sessionId)
+      .where(
+        "seq",
+        "=",
+        parameter((row) => row.seq),
+      ),
+  );
+}
 
 function hasUtf8Storage(database: DatabaseSync): boolean {
   let utf8 = utf8Databases.get(database);

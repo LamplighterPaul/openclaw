@@ -283,14 +283,16 @@ describe("memory manager database publication", () => {
         )
         .run("memory/stale.md", "memory", "stale", 1, 1);
       const embedding = encodeMemoryEmbedding([0.1234567890123456, -0.5]);
-      const insertChunk = (db: DatabaseSync, rowid: number, id: string, text: string) =>
-        db
-          .prepare(
-            `INSERT INTO memory_index_chunks
+      const insertChunk = (db: DatabaseSync, rowid: number, id: string, text: string) => {
+        db.prepare(
+          `INSERT INTO memory_index_chunks
              (chunk_rowid, id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
            VALUES (?, ?, ?, 'memory', 1, 1, ?, 'model', ?, ?, 1)`,
-          )
-          .run(rowid, id, `memory/${id}.md`, id, text, embedding);
+        ).run(rowid, id, `memory/${id}.md`, id, text, embedding);
+        db.prepare(`INSERT INTO memory_index_chunk_provenance
+          (chunk_id, origin_class, session_kind, observed_at)
+          VALUES (?, 'owner', 'interactive', 1)`).run(id);
+      };
       insertChunk(targetDb, 7, "stale", "Old violetmarker");
       targetDb.exec(`
         DROP TRIGGER memory_index_paths_fts_after_delete;

@@ -22,9 +22,9 @@ import { prepareSessionCostUsageRefreshLock } from "./session-cost-usage-cache.s
 import {
   readSessionCostUsageRollupEntry,
   readSessionCostUsageRollupRows,
+  writeLegacyUsageCostRollupForTest,
 } from "./session-cost-usage-cache.test-support.js";
 import { listUsageCountedTranscriptStats } from "./session-cost-usage-collection.js";
-import { encodeUsageCostRollup } from "./session-cost-usage-rollup-codec.js";
 import {
   discoverAllSessions as discoverAllSessionsForAgent,
   loadCostUsageSummary as loadCostUsageSummaryForAgent,
@@ -1126,41 +1126,7 @@ describe("session cost usage", () => {
       });
       expect(current.cacheStatus.status).toBe("fresh");
 
-      const writeLegacyRollup = async () => {
-        const currentRow = requireValue(
-          readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
-          "expected current usage rollup",
-        );
-        const currentRollup = requireValue(
-          readSessionCostUsageRollupEntry(currentRow, "main"),
-          "decoded usage rollup",
-        );
-        currentRollup.version = 4;
-        currentRollup.rollup.untimestamped.totals.totalTokens = 9_999;
-        for (const bucket of [
-          currentRollup.rollup.untimestamped,
-          ...Object.values(currentRollup.rollup.buckets),
-        ]) {
-          bucket.messageCounts.toolCalls = 1;
-          bucket.tools = [{ name: "read", count: 1 }];
-        }
-        const lock = prepareSessionCostUsageRefreshLock("main");
-        const encoded = encodeUsageCostRollup(currentRollup);
-        try {
-          expect(await lock.acquire()).toBe(true);
-          expect(
-            await lock.writeRollup({
-              rollupId: sessionFile,
-              previousValueJson: Buffer.from(currentRow.valueJson),
-              valueJson: Buffer.from(encoded.valueJson),
-              blob: encoded.blob,
-              updatedAt: currentRow.updatedAt + 1,
-            }),
-          ).toBe(true);
-        } finally {
-          await lock.release();
-        }
-      };
+      const writeLegacyRollup = () => writeLegacyUsageCostRollupForTest(sessionFile);
       const appendUsage = (timestamp: string) =>
         fs.appendFile(sessionFile, `${JSON.stringify(assistantEntry(timestamp, 5))}\n`, "utf-8");
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;

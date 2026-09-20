@@ -1,6 +1,5 @@
 import { createTimeZoneDayKeyFormatter } from "./format-time/format-datetime.js";
 import type { SessionCostUsageRollupRow } from "./session-cost-usage-cache.kernel.js";
-import type { UsageCostTranscriptFile } from "./session-cost-usage-collection.js";
 import {
   canUseUsageCostRollupForPartial,
   decodeUsageCostRollup,
@@ -18,6 +17,7 @@ import type {
   SessionCostSummary,
   UsageCacheStatus,
   UsageDailyBucket,
+  UsageCostTranscriptFile,
 } from "./session-cost-usage.types.js";
 
 const formatUtcDayKey = (date: Date): string =>
@@ -241,7 +241,9 @@ export async function projectCostUsageSummary(
     );
     if (!entry) {
       params.onInvalidBody(row.key);
-      if (fresh) staleFiles += 1;
+      if (fresh) {
+        staleFiles += 1;
+      }
       continue;
     }
     cachedFiles += 1;
@@ -325,7 +327,9 @@ export async function projectSessionCostSummaries(
     const freshRequests = requests.filter(({ file }) =>
       isUsageCostRollupFresh({ checkpoint: envelope.checkpoint, file }),
     );
-    if (freshRequests.length === 0) continue;
+    if (freshRequests.length === 0) {
+      continue;
+    }
     const entry = decodeUsageCostRollup(
       row.valueJson,
       params.pricingFingerprint,

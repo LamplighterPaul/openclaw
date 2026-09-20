@@ -261,13 +261,6 @@ export function readClosedTranscriptTurn(params: {
         .where("active.message_position", "<=", params.boundary.terminal.activeMessagePosition)
         .orderBy("active.message_position", "asc");
       // Admit count and bytes in this snapshot before acquiring any selected body.
-      const positions = executeSqliteQuerySync(
-        database.db,
-        selected.select("event.seq").limit(params.maxEvents + 1),
-      ).rows;
-      if (positions.length > params.maxEvents) {
-        return { kind: "too-large" } as const;
-      }
       try {
         assertSqliteJsonlReadBudget(
           database.db,
@@ -277,7 +270,7 @@ export function readClosedTranscriptTurn(params: {
             .as("events"),
           params.maxBytes,
           "Closed transcript turn",
-          { hasExactUtf8Bytes: true, separatorBytes: 0 },
+          { hasExactUtf8Bytes: true, separatorBytes: 0, maxRows: params.maxEvents },
         );
       } catch (error) {
         if (error instanceof SqliteJsonlReadBudgetExceededError) {

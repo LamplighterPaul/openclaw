@@ -247,7 +247,10 @@ describe("tool search gateway e2e session log scanner", () => {
             "UPDATE transcript_events SET event_json = NULL, event_zstd = ?, event_utf8_bytes = ? WHERE seq = ?",
           );
           for (const row of db.prepare("SELECT seq, event_json FROM transcript_events").all()) {
-            const bytes = Buffer.from(String(row.event_json), "utf8");
+            if (typeof row.event_json !== "string" || typeof row.seq !== "number") {
+              throw new Error("Invalid transcript fixture row");
+            }
+            const bytes = Buffer.from(row.event_json, "utf8");
             update.run(zstdCompressSync(bytes), bytes.byteLength, row.seq);
           }
         }

@@ -7,12 +7,12 @@ import type {
   SessionCostUsageRollupByteRow,
   SessionCostUsageRollupRow,
 } from "./session-cost-usage-cache.kernel.js";
-import type { UsageCostTranscriptFile } from "./session-cost-usage-collection.js";
 import type {
   CostUsageSummary,
   SessionCostSummary,
   UsageCacheStatus,
   UsageDailyBucket,
+  UsageCostTranscriptFile,
 } from "./session-cost-usage.types.js";
 
 export type UsageCostWorkerDatabase = { agentId: string; path: string };

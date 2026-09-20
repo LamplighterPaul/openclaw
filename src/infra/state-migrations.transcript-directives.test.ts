@@ -279,7 +279,14 @@ describe("historical transcript directive migration", () => {
         for (const row of opened.db
           .prepare("SELECT session_id, seq, event_json FROM transcript_events")
           .all()) {
-          const payload = prepareTranscriptPayload(opened.db, String(row.event_json));
+          if (
+            typeof row.event_json !== "string" ||
+            typeof row.session_id !== "string" ||
+            typeof row.seq !== "number"
+          ) {
+            throw new Error("Invalid transcript fixture row");
+          }
+          const payload = prepareTranscriptPayload(opened.db, row.event_json);
           expect(payload.event_zstd).not.toBeNull();
           update.run(
             payload.event_zstd,

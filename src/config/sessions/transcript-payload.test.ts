@@ -85,7 +85,7 @@ function inspectNavigation(database: DatabaseSync, event: RawBuilder<string>, se
         .selectFrom("transcript_events")
         .select([
           sql<string | null>`json_type(${event}, ${jsonPath})`.as("type"),
-          sql<unknown>`CASE WHEN json_type(${event}, ${jsonPath}) IN ('object', 'array')
+          sql`CASE WHEN json_type(${event}, ${jsonPath}) IN ('object', 'array')
             THEN json(json_extract(${event}, ${jsonPath}))
             ELSE json_extract(${event}, ${jsonPath}) END`.as("value"),
         ])
@@ -372,8 +372,9 @@ describe("transcript payload storage boundary", () => {
       createTable(database);
       const original = Buffer.from('{"type":"custom"}');
       const damaged = compressedRecord(original);
-      const damagedBytes = Uint8Array.from(damaged.event_zstd!);
-      damagedBytes[damagedBytes.length - 1] ^= 1;
+      const damagedBytes = Buffer.from(damaged.event_zstd!);
+      const checksumOffset = damagedBytes.length - 1;
+      damagedBytes.writeUInt8(damagedBytes.readUInt8(checksumOffset) ^ 1, checksumOffset);
       const records = [
         { ...damaged, event_zstd: damagedBytes },
         compressedRecord(original, original.byteLength - 1),

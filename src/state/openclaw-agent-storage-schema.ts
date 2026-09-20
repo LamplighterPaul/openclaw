@@ -37,17 +37,21 @@ const LEGACY_STORAGE_TABLES = {
 
 /** Preserve historical storage contracts before the admitted schema-22 cutover. */
 export function withLegacyAgentStorageSchema(schema: string): string {
+  let historicalSchema = schema;
   for (const [table, legacySchema] of Object.entries(LEGACY_STORAGE_TABLES)) {
-    schema = schema.replace(extractSqliteTableSchema(schema, table), legacySchema);
+    historicalSchema = historicalSchema.replace(
+      extractSqliteTableSchema(historicalSchema, table),
+      legacySchema,
+    );
   }
-  if (schema.includes("CREATE TABLE IF NOT EXISTS session_transcript_fts_rows (")) {
-    schema = schema.replace(
-      extractSqliteTableSchema(schema, "session_transcript_fts_rows", {
+  if (historicalSchema.includes("CREATE TABLE IF NOT EXISTS session_transcript_fts_rows (")) {
+    historicalSchema = historicalSchema.replace(
+      extractSqliteTableSchema(historicalSchema, "session_transcript_fts_rows", {
         endMarker: "INSERT OR IGNORE INTO memory_index_state",
         includeEndMarker: false,
       }),
       "",
     );
   }
-  return schema;
+  return historicalSchema;
 }

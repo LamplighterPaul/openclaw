@@ -20,6 +20,7 @@ import {
   openOpenClawAgentDatabase,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { describe, expect, it, vi } from "vitest";
+import { writeMemoryIndexArchiveTranscript } from "./index-archive.test-support.js";
 import {
   createManagerIndexFixture,
   type ManagerIndexFixture,
@@ -1955,28 +1956,10 @@ describe("memory index", () => {
   });
 
   it("keeps provider cutover vector search paused during targeted session sync", async () => {
-    const sessionsDir = resolveSessionTranscriptsDirForAgent("main");
-    await fs.mkdir(sessionsDir, { recursive: true });
-    const sessionFile = path.join(sessionsDir, "session-targeted-cutover.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          type: "session",
-          id: "session-targeted-cutover",
-          timestamp: "2026-04-07T15:24:04.113Z",
-        }),
-        JSON.stringify({
-          type: "message",
-          message: {
-            role: "assistant",
-            timestamp: "2026-04-07T15:25:04.113Z",
-            content: [{ type: "text", text: "Targeted cutover marker." }],
-          },
-        }),
-      ].join("\n") + "\n",
-      "utf8",
-    );
+    const sessionFile = await writeMemoryIndexArchiveTranscript({
+      sessionId: "session-targeted-cutover",
+      text: "Targeted cutover marker.",
+    });
 
     const oldCfg = createCfg({
       sources: ["memory", "sessions"],
@@ -2016,27 +1999,10 @@ describe("memory index", () => {
   });
 
   it("preserves memory dirty events raised during session identity reindex", async () => {
-    const sessionsDir = resolveSessionTranscriptsDirForAgent("main");
-    await fs.mkdir(sessionsDir, { recursive: true });
-    await fs.writeFile(
-      path.join(sessionsDir, "session-dirty-during-reindex.jsonl"),
-      [
-        JSON.stringify({
-          type: "session",
-          id: "session-dirty-during-reindex",
-          timestamp: "2026-04-07T15:24:04.113Z",
-        }),
-        JSON.stringify({
-          type: "message",
-          message: {
-            role: "assistant",
-            timestamp: "2026-04-07T15:25:04.113Z",
-            content: [{ type: "text", text: "Dirty during session marker." }],
-          },
-        }),
-      ].join("\n") + "\n",
-      "utf8",
-    );
+    await writeMemoryIndexArchiveTranscript({
+      sessionId: "session-dirty-during-reindex",
+      text: "Dirty during session marker.",
+    });
 
     const oldCfg = createCfg({
       sources: ["memory", "sessions"],

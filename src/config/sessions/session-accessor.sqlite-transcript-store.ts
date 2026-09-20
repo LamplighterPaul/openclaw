@@ -55,9 +55,10 @@ import { startSessionTranscriptIndexReconcile } from "./session-transcript-recon
 import { copyRetainedTranscriptPayload } from "./session-transcript-retained-data.js";
 import { createSessionTranscriptHeader } from "./transcript-header.js";
 import {
+  createTranscriptEventInserter,
+  createTranscriptPayloadUpdater,
   prepareTranscriptPayload,
   transcriptEventJsonSql,
-  type TranscriptPayloadRecord,
 } from "./transcript-payload.js";
 
 type TranscriptAppendOptions = {
@@ -77,26 +78,6 @@ type TranscriptAppendCursor = {
   insertEvent?: ReturnType<typeof createTranscriptEventInserter>;
   insertIdentity?: ReturnType<typeof createTranscriptIdentityInserter>;
 };
-
-export function createTranscriptEventInserter(database: OpenClawAgentDatabase, sessionId: string) {
-  const insert = prepareSqliteQuerySync<
-    TranscriptPayloadRecord & { seq: number; createdAt: number }
-  >(database.db, (parameter) =>
-    getSessionKysely(database.db)
-      .insertInto("transcript_events")
-      .values({
-        session_id: sessionId,
-        seq: parameter((row) => row.seq),
-        event_json: parameter((row) => row.event_json),
-        event_zstd: parameter((row) => row.event_zstd),
-        event_utf8_bytes: parameter((row) => row.event_utf8_bytes),
-        navigation_json: parameter((row) => row.navigation_json),
-        created_at: parameter((row) => row.createdAt),
-      }),
-  );
-  return (row: { seq: number; eventJson: string; createdAt: number }) =>
-    insert({ ...row, ...prepareTranscriptPayload(database.db, row.eventJson) });
-}
 
 export function createTranscriptIdentityInserter(
   database: OpenClawAgentDatabase,
@@ -137,7 +118,7 @@ export function insertTranscriptRowsWithoutProjectionInTransaction(
   }[],
   reservedMessageIdempotencyKeys: ReadonlySet<string> = new Set(),
 ): void {
-  const insertEvent = createTranscriptEventInserter(database, sessionId);
+  const insertEvent = createTranscriptEventInserter(database.db, sessionId);
   const insertIdentity = createTranscriptIdentityInserter(database, sessionId, false);
   for (const row of rows) {
     const event = canonicalizeTranscriptEventMedia(row.event);
@@ -215,7 +196,7 @@ function appendTranscriptEvent(
     return false;
   }
   const seq = cursor.nextSeq ?? readNextTranscriptSeq(database, scope.sessionId);
-  cursor.insertEvent ??= createTranscriptEventInserter(database, scope.sessionId);
+  cursor.insertEvent ??= createTranscriptEventInserter(database.db, scope.sessionId);
   const eventJson = JSON.stringify(persistedEvent);
   cursor.insertEvent({ seq, eventJson, createdAt });
   cursor.nextSeq = seq + 1;
@@ -442,7 +423,7 @@ export function replaceSqliteTranscriptEventsInTransaction(
   const state = {
     seenEventIds: new Set<string>(),
     seenMessageIdempotencyKeys: new Set<string>(),
-    insertEvent: createTranscriptEventInserter(database, resolved.sessionId),
+    insertEvent: createTranscriptEventInserter(database.db, resolved.sessionId),
     insertIdentity: createTranscriptIdentityInserter(database, resolved.sessionId, false),
     // The reset/dirty transition above owns the initial projection state for this whole batch.
     appendToIndex: createTranscriptIndexAppenderInTransaction(database.db, resolved.sessionId),
@@ -612,25 +593,7 @@ export function updateSqliteTranscriptEventJsonInTransaction(
     database.db,
     sessionId,
   );
-  const db = getSessionKysely(database.db);
-  const update = prepareSqliteQuerySync<TranscriptPayloadRecord & { seq: number }>(
-    database.db,
-    (parameter) =>
-      db
-        .updateTable("transcript_events")
-        .set({
-          event_json: parameter((row) => row.event_json),
-          event_zstd: parameter((row) => row.event_zstd),
-          event_utf8_bytes: parameter((row) => row.event_utf8_bytes),
-          navigation_json: parameter((row) => row.navigation_json),
-        })
-        .where("session_id", "=", sessionId)
-        .where(
-          "seq",
-          "=",
-          parameter((row) => row.seq),
-        ),
-  );
+  const update = createTranscriptPayloadUpdater(database.db, sessionId);
   for (const row of updates) {
     update({ seq: row.seq, ...prepareTranscriptPayload(database.db, row.eventJson) });
   }

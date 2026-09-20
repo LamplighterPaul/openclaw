@@ -1,11 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { DatabaseSync } from "node:sqlite";
 import type { AliasedExpression } from "kysely";
-import {
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-  iterateSqliteQuerySync,
-} from "./kysely-sync.js";
+import { getNodeSqliteKysely, iterateSqliteQuerySync } from "./kysely-sync.js";
 
 export class SqliteJsonlReadBudgetExceededError extends Error {}
 
@@ -18,14 +14,9 @@ export function assertSqliteJsonlReadBudget(
   >,
   budget: number,
   label: string,
-  options: { hasExactUtf8Bytes?: boolean; separatorBytes?: number } = {},
+  options: { hasExactUtf8Bytes?: boolean; separatorBytes?: number; maxRows?: number } = {},
 ): void {
   const db = getNodeSqliteKysely<{ pragma_encoding: { encoding: string } }>(database);
-  const encoding = executeSqliteQueryTakeFirstSync(
-    database,
-    db.selectFrom("pragma_encoding").select("encoding"),
-  )?.encoding;
-  const utf8 = encoding === "UTF-8";
   const rejectOverflow = (bytes: number) => {
     if (bytes > budget) {
       throw new SqliteJsonlReadBudgetExceededError(
@@ -44,15 +35,24 @@ export function assertSqliteJsonlReadBudget(
       .select((eb) => [
         eb.fn<number | null>("octet_length", ["event_json"]).as("bytes"),
         (options.hasExactUtf8Bytes ? eb.ref("event_utf8_bytes") : eb.val(null)).as("utf8_bytes"),
-      ]),
+        eb.selectFrom("pragma_encoding").select("encoding").as("encoding"),
+      ])
+      .$if(options.maxRows !== undefined, (query) => query.limit(options.maxRows! + 1)),
   );
+  let rowCount = 0;
   let bytes = 0;
   let separator = 0;
   let knownBytes = 0;
   let separators = 0;
   let unknownRows = 0;
   for (const row of sizes) {
-    const exact = row.utf8_bytes ?? (utf8 ? row.bytes : null);
+    rowCount += 1;
+    if (options.maxRows !== undefined && rowCount > options.maxRows) {
+      throw new SqliteJsonlReadBudgetExceededError(
+        `${label} has too many rows to export (at least ${rowCount}; limit ${options.maxRows})`,
+      );
+    }
+    const exact = row.utf8_bytes ?? (row.encoding === "UTF-8" ? row.bytes : null);
     if (exact === null && row.bytes === null) {
       throw new Error(`${label} has a transcript row without byte metadata or identity text`);
     }

@@ -9,8 +9,8 @@ import {
   ensureTranscriptSessionRoot,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
-import { createTranscriptEventInserter } from "./session-accessor.sqlite-transcript-store.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
+import { createTranscriptEventInserter } from "./transcript-payload.js";
 import type { SessionEntry } from "./types.js";
 
 export async function importSqliteSessionRows(
@@ -36,7 +36,7 @@ export async function seedUnindexedTranscriptForTest(
       ensureTranscriptSessionRoot(database, resolved, first.created_at, { allowStoredAlias: true });
       ensureTranscriptGenerationInTransaction(database, resolved.sessionId);
     }
-    const insertEvent = createTranscriptEventInserter(database, resolved.sessionId);
+    const insertEvent = createTranscriptEventInserter(database.db, resolved.sessionId);
     for (const row of params.events) {
       insertEvent({ seq: row.seq, eventJson: row.event_json, createdAt: row.created_at });
     }

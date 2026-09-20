@@ -2,24 +2,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { sql } from "kysely";
 import {
   decodeSessionArchiveBytes,
   encodeSessionArchiveContent,
   readSessionArchiveContentSync,
   SESSION_ARCHIVE_ZSTD_SUFFIX,
 } from "../config/sessions/archive-compression.js";
-import type { TranscriptEvent } from "../config/sessions/session-accessor.sqlite-contract.js";
 import { resolveSqliteTranscriptArchiveDirectory } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { rewriteSqliteTranscriptEventRowsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "../config/sessions/session-transcript-index.js";
-import { transcriptEventReadBytesSql } from "../config/sessions/session-transcript-read-bytes.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
-import {
-  canonicalizePersistedUserMessageMedia,
-  hasMeaningfulRetiredMediaCarrier,
-} from "../media/media-facts.js";
 import {
   AGENT_MEDIA_SCHEMA_VERSION,
   AGENT_STORAGE_SCHEMA_VERSION,
@@ -53,7 +43,6 @@ import { VERSION } from "../version.js";
 import { formatErrorMessage } from "./errors.js";
 import {
   executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   clearNodeSqliteKyselyCacheForDatabase,
   enableNodeSqliteKyselyStatementCache,
@@ -68,6 +57,12 @@ import {
 import { readSqliteUserVersion } from "./sqlite-user-version.js";
 import { recoverMisplacedAgentDatabaseCopies } from "./state-migrations.agent-owner-recovery.js";
 import {
+  mediaSourceDriftMessage,
+  readMediaSourceVersion,
+  scanTranscriptRows,
+  scanTrajectoryRows,
+} from "./state-migrations.media-persistence-database.js";
+import {
   listTranscriptArchives,
   resolveAgentDatabaseMigrationTargets,
   type AgentDatabaseMigrationTarget,
@@ -75,23 +70,16 @@ import {
 } from "./state-migrations.media-persistence-targets.js";
 import {
   assertEventIdentitiesUnchanged,
-  eventIdentity,
   parseArchiveContent,
-  parseTranscriptEvent,
   transformMediaArchiveContent,
-  transformTranscriptEvent,
 } from "./state-migrations.media-persistence-transform.js";
 import { migrateCanonicalTranscriptArchives } from "./state-migrations.transcript-directives-archives.js";
 import type { MigrationMessages } from "./state-migrations.types.js";
 
 const PREVIOUS_MEDIA_SCHEMA_VERSION = AGENT_MEDIA_SCHEMA_VERSION - 1;
 const ARCHIVE_TEMP_MARKER = ".media-retirement";
-const MEDIA_MIGRATION_ROW_BATCH_SIZE = 64;
 
-type MediaMigrationDatabase = Pick<
-  OpenClawAgentKyselyDatabase,
-  "schema_meta" | "session_windows" | "trajectory_runtime_events" | "transcript_events"
->;
+type MediaMigrationDatabase = Pick<OpenClawAgentKyselyDatabase, "schema_meta">;
 
 type ArchiveSourceSnapshot = {
   dev: number;
@@ -100,268 +88,6 @@ type ArchiveSourceSnapshot = {
   sha256: string;
   size: number;
 };
-
-function forEachMediaEventBatch(params: {
-  database: DatabaseSync;
-  table: "trajectory_runtime_events" | "transcript_events";
-  legacyTextStorage?: boolean;
-  visit: (rows: Array<{ event_json: string; seq: number; session_id: string }>) => void;
-}): void {
-  const db = getNodeSqliteKysely<MediaMigrationDatabase>(params.database);
-  const eventJson =
-    params.table === "transcript_events" && !params.legacyTextStorage
-      ? transcriptEventJsonSql(params.database)
-      : sql.ref<string>(`${params.table}.event_json`);
-  let cursor: { seq: number; sessionId: string } | undefined;
-  while (true) {
-    let query = db
-      .selectFrom(params.table)
-      .select(["session_id", "seq"])
-      .select(eventJson.as("event_json"))
-      .orderBy("session_id", "asc")
-      .orderBy("seq", "asc")
-      .limit(MEDIA_MIGRATION_ROW_BATCH_SIZE);
-    const after = cursor;
-    if (after) {
-      // Keep SQLite on a composite primary-key seek. Expanding this tuple into
-      // OR branches restarts the index scan for every page.
-      query = query.where((expression) =>
-        expression(
-          expression.refTuple("session_id", "seq"),
-          ">",
-          expression.tuple(after.sessionId, after.seq),
-        ),
-      );
-    }
-    const rows = executeSqliteQuerySync(params.database, query).rows;
-    const last = rows.at(-1);
-    if (!last) {
-      return;
-    }
-    params.visit(rows);
-    cursor = { seq: last.seq, sessionId: last.session_id };
-  }
-}
-
-function scanTranscriptRows(params: {
-  database: DatabaseSync;
-  pathname: string;
-  writer?: OpenClawAgentDatabase;
-  legacyTextStorage: boolean;
-  onChangedSession?: (sessionId: string) => void;
-}): number {
-  const { database, pathname, writer } = params;
-  const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
-  let lastChangedSessionId: string | undefined;
-  let changedSessions = 0;
-  forEachMediaEventBatch({
-    database,
-    table: "transcript_events",
-    legacyTextStorage: params.legacyTextStorage,
-    visit: (rows) => {
-      const sessionIds = [...new Set(rows.map((row) => row.session_id))];
-      const sessionKeys = new Map(
-        executeSqliteQuerySync(
-          database,
-          db
-            .selectFrom("session_windows")
-            .select(["session_id", "session_key"])
-            .where("session_id", "in", sessionIds),
-        ).rows.map((row) => [row.session_id, row.session_key]),
-      );
-      for (const sessionId of sessionIds) {
-        if (!sessionKeys.has(sessionId)) {
-          throw new Error(`${pathname}:${sessionId} has transcript rows without a session window`);
-        }
-      }
-      const rewritesBySession = new Map<
-        string,
-        Array<{ event: TranscriptEvent; expectedEventJson: string; seq: number }>
-      >();
-      for (const row of rows) {
-        const owner = `${pathname}:${row.session_id}:${row.seq}`;
-        const event = parseTranscriptEvent(row.event_json, owner);
-        const transformed = transformTranscriptEvent(event);
-        if (!transformed.changed) {
-          continue;
-        }
-        if (eventIdentity(event) !== eventIdentity(transformed.event)) {
-          throw new Error(`${owner} event identity changed during media migration`);
-        }
-        if (lastChangedSessionId !== row.session_id) {
-          lastChangedSessionId = row.session_id;
-          changedSessions += 1;
-          params.onChangedSession?.(row.session_id);
-        }
-        const rewrites = rewritesBySession.get(row.session_id) ?? [];
-        rewrites.push({
-          event: transformed.event,
-          expectedEventJson: row.event_json,
-          seq: row.seq,
-        });
-        rewritesBySession.set(row.session_id, rewrites);
-      }
-      if (writer) {
-        for (const [sessionId, rewrites] of rewritesBySession) {
-          const sessionKey = sessionKeys.get(sessionId);
-          if (!sessionKey) {
-            throw new Error(
-              `${pathname}:${sessionId} has transcript rows without a session window`,
-            );
-          }
-          rewriteSqliteTranscriptEventRowsInTransaction(
-            writer,
-            { agentId: writer.agentId, path: pathname, sessionId, sessionKey },
-            rewrites,
-            { legacyTextStorage: params.legacyTextStorage },
-          );
-        }
-      }
-    },
-  });
-  return changedSessions;
-}
-
-function rewriteTrajectoryEventJson(eventJson: string, owner: string): string {
-  let event: unknown;
-  try {
-    event = JSON.parse(eventJson) as unknown;
-  } catch (error) {
-    throw new Error(`${owner} contains invalid trajectory JSON: ${String(error)}`, {
-      cause: error,
-    });
-  }
-  if (!isRecord(event) || !isRecord(event.data) || !Array.isArray(event.data.messagesSnapshot)) {
-    return eventJson;
-  }
-  let changed = false;
-  const messagesSnapshot = event.data.messagesSnapshot.map((message) => {
-    if (!isRecord(message) || !hasMeaningfulRetiredMediaCarrier(message)) {
-      return message;
-    }
-    const canonical = canonicalizePersistedUserMessageMedia(message);
-    changed ||= canonical.changed;
-    return canonical.message;
-  });
-  return changed
-    ? JSON.stringify({ ...event, data: { ...event.data, messagesSnapshot } })
-    : eventJson;
-}
-
-function scanTrajectoryRows(params: {
-  database: DatabaseSync;
-  pathname: string;
-  rewrite: boolean;
-}): number {
-  const { database, pathname, rewrite } = params;
-  const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
-  let changedRows = 0;
-  forEachMediaEventBatch({
-    database,
-    table: "trajectory_runtime_events",
-    visit: (rows) => {
-      for (const row of rows) {
-        const rewrittenEventJson = rewriteTrajectoryEventJson(
-          row.event_json,
-          `${pathname}:${row.session_id}:${row.seq}`,
-        );
-        if (rewrittenEventJson === row.event_json) {
-          continue;
-        }
-        changedRows += 1;
-        if (rewrite) {
-          executeSqliteQuerySync(
-            database,
-            db
-              .updateTable("trajectory_runtime_events")
-              .set({ event_json: rewrittenEventJson })
-              .where("session_id", "=", row.session_id)
-              .where("seq", "=", row.seq),
-          );
-        }
-      }
-    },
-  });
-  return changedRows;
-}
-
-function readMediaSourceVersion(database: DatabaseSync, legacyTextStorage: boolean) {
-  const dataVersionRow = database.prepare("PRAGMA data_version").get();
-  const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
-  /* kysely-allow-raw: native byte sums only classify data-version drift; exact CAS still compares decoded text. */
-  const eventBytes = legacyTextStorage
-    ? sql<number>`octet_length(${sql.ref("transcript_events.event_json")})`
-    : transcriptEventReadBytesSql();
-  const counts = executeSqliteQueryTakeFirstSync(
-    database,
-    db.selectNoFrom((eb) => [
-      eb
-        .selectFrom("transcript_events")
-        .select((row) => row.fn.countAll<number>().as("count"))
-        .as("transcript_rows"),
-      eb
-        .selectFrom("transcript_events")
-        .select((row) => row.fn.coalesce(row.fn.sum<number>(eventBytes), row.val(0)).as("bytes"))
-        .as("transcript_bytes"),
-      eb
-        .selectFrom("transcript_events")
-        .select((row) =>
-          row
-            .cast<string>(row.fn.coalesce(row.fn.sum<number>("created_at"), row.val(0)), "text")
-            .as("created_at"),
-        )
-        .as("transcript_created_at"),
-      eb
-        .selectFrom("trajectory_runtime_events")
-        .select((row) => row.fn.countAll<number>().as("count"))
-        .as("trajectory_rows"),
-      eb
-        .selectFrom("trajectory_runtime_events")
-        .select((row) =>
-          row.fn
-            .coalesce(row.fn.sum<number>(row.fn<number>("length", ["event_json"])), row.val(0))
-            .as("bytes"),
-        )
-        .as("trajectory_bytes"),
-    ]),
-  );
-  const number = (value: unknown): number =>
-    typeof value === "bigint" ? Number(value) : typeof value === "number" ? value : 0;
-  const count = (key: keyof NonNullable<typeof counts>): number => number(counts?.[key]);
-  return {
-    dataVersion: number(isRecord(dataVersionRow) ? dataVersionRow.data_version : undefined),
-    trajectoryBytes: count("trajectory_bytes"),
-    trajectoryRows: count("trajectory_rows"),
-    transcriptBytes: count("transcript_bytes"),
-    transcriptCreatedAt: String(
-      (isRecord(counts) ? counts.transcript_created_at : undefined) ?? "0",
-    ),
-    transcriptRows: count("transcript_rows"),
-  };
-}
-
-type MediaSourceVersion = ReturnType<typeof readMediaSourceVersion>;
-
-function mediaSourceDriftMessage(
-  pathname: string,
-  expected: MediaSourceVersion,
-  current: MediaSourceVersion,
-): string {
-  if (
-    expected.transcriptRows !== current.transcriptRows ||
-    expected.transcriptBytes !== current.transcriptBytes ||
-    expected.transcriptCreatedAt !== current.transcriptCreatedAt
-  ) {
-    return `${pathname} transcript source changed before migration commit`;
-  }
-  if (
-    expected.trajectoryRows !== current.trajectoryRows ||
-    expected.trajectoryBytes !== current.trajectoryBytes
-  ) {
-    return `${pathname} trajectory source changed before migration commit`;
-  }
-  return `${pathname} source changed before migration transaction`;
-}
 
 function createMigrationDatabaseHandle(
   database: DatabaseSync,

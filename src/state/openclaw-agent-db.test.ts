@@ -61,7 +61,7 @@ import {
 } from "./openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import { removeCanonicalValidationFromHistoricalAgentFixture } from "./openclaw-agent-db.test-support.js";
-import { seedOpenClawAgentSchemaV21 } from "./openclaw-agent-schema-v21.test-support.js";
+import { materializeV21WorkerAgentDatabase } from "./openclaw-agent-schema-v21.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -181,22 +181,6 @@ function materializeCurrentWorkerAgentDatabase(stateDir: string): string {
     databasePath,
     fs.constants.COPYFILE_EXCL,
   );
-  return databasePath;
-}
-
-function materializeV21WorkerAgentDatabase(stateDir: string): string {
-  const databasePath = resolveOpenClawAgentSqlitePath({
-    agentId: "worker-1",
-    env: { OPENCLAW_STATE_DIR: stateDir },
-  });
-  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-  const { DatabaseSync } = requireNodeSqlite();
-  const database = new DatabaseSync(databasePath);
-  try {
-    seedOpenClawAgentSchemaV21(database, "worker-1");
-  } finally {
-    database.close();
-  }
   return databasePath;
 }
 

@@ -11,24 +11,11 @@ import {
   loadSqliteVecExtension,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { readMemoryHostEventRecords } from "openclaw/plugin-sdk/memory-host-events";
-import {
-  createPluginStateKeyedStoreForTests,
-  getPluginStateCapacityForTests,
-  importPluginStateEntriesForDoctorForTests,
-  openOpenClawStateDatabase,
-  resetPluginStateStoreForTests,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type {
-  OpenKeyedStoreOptions,
-  PluginDoctorStateMigrationContext,
-} from "openclaw/plugin-sdk/runtime-doctor-migrations";
-import {
-  closeOpenClawAgentDatabasesAsync,
-  closeOpenClawAgentDatabasesForTest,
-  closeOpenClawStateDatabaseAsync,
-} from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { openOpenClawStateDatabase } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import type { PluginDoctorStateMigrationContext } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
+import { createDoctorContext, resetDoctorPluginState } from "./doctor-contract-api.test-support.js";
 import {
   DREAMING_DAILY_INGESTION_NAMESPACE,
   configureMemoryCoreDreamingState,
@@ -36,33 +23,13 @@ import {
 } from "./src/dreaming-state.js";
 import { bm25RankToScore, buildFtsQuery } from "./src/memory/keyword-query.js";
 import { runVectorKnnQuery } from "./src/memory/manager-search-knn.js";
-import { searchKeyword, searchVector } from "./src/memory/manager-search.js";
+import { searchVector } from "./src/memory/manager-search-vector.js";
+import { searchKeyword } from "./src/memory/manager-search.js";
 import {
   dreamingTestState as dreamingTesting,
   resetMemoryCoreDreamingStateForTests,
   shortTermTestState as shortTermTesting,
 } from "./src/test-helpers.js";
-
-function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
-  return {
-    getPluginStateCapacity() {
-      return getPluginStateCapacityForTests("memory-core", env);
-    },
-    importPluginStateEntries(options, entries) {
-      importPluginStateEntriesForDoctorForTests(
-        "memory-core",
-        { ...options, env: options.env ?? env },
-        entries,
-      );
-    },
-    openPluginStateKeyedStore<T>(options: OpenKeyedStoreOptions) {
-      return createPluginStateKeyedStoreForTests<T>("memory-core", {
-        ...options,
-        env: options.env ?? env,
-      });
-    },
-  };
-}
 
 function legacyMemoryIndexMigration() {
   const migration = stateMigrations.find(
@@ -470,13 +437,6 @@ async function searchMigratedKeywordRows(agentPath: string, query: string) {
   } finally {
     db.close();
   }
-}
-
-async function resetDoctorPluginState() {
-  await closeOpenClawAgentDatabasesAsync();
-  closeOpenClawAgentDatabasesForTest();
-  await closeOpenClawStateDatabaseAsync();
-  resetPluginStateStoreForTests();
 }
 
 describe("memory-core doctor dreaming migration", () => {

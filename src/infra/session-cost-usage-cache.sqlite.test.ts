@@ -101,7 +101,7 @@ describe("session cost usage SQLite cache", () => {
         ["newer", JSON.stringify(entry)],
         ["broken", "{"],
         ["obsolete", JSON.stringify({ ...entry, version: 5 })],
-      ]) {
+      ] as const) {
         insert.run("session-cost-usage-rollup-v2", key, json, null, 123);
       }
       const newer = encodeUsageCostRollup({ ...entry, scannedAt: 999 });

@@ -57,7 +57,9 @@ function seedHistoricalData(db: DatabaseSync) {
   `);
   const archive = Buffer.from('{"type":"message","id":"cold-message"}\n');
   const codec = resolveZstdCodec();
-  if (!codec) throw new Error("Cold transcript fixture requires Zstd support");
+  if (!codec) {
+    throw new Error("Cold transcript fixture requires Zstd support");
+  }
   const compressedArchive = codec.compress(archive);
   db.prepare(`INSERT INTO session_transcript_cold_archives
     (session_id, generation, archive_name, archive_sha256, event_count, raw_bytes, archive_bytes, last_seq, archived_at, storage, archive_blob)
@@ -245,15 +247,17 @@ describe("agent schema 21 storage cutover", () => {
             .prepare("SELECT chunk_rowid, embedding FROM memory_index_chunks WHERE id = 'chunk'")
             .get()!;
           expect(chunk.chunk_rowid).toBe(17);
-          if (!(chunk.embedding instanceof Uint8Array))
+          if (!(chunk.embedding instanceof Uint8Array)) {
             throw new Error("Expected binary chunk vector");
+          }
           expect(decodeMemoryEmbedding(chunk.embedding)).toEqual([1 + Number.EPSILON, 0.1]);
           const vector = reader
             .prepare("SELECT rowid, embedding, dims, updated_at FROM memory_embedding_cache")
             .get()!;
           expect(vector).toMatchObject({ rowid: 23, dims: 2, updated_at: 20 });
-          if (!(vector.embedding instanceof Uint8Array))
+          if (!(vector.embedding instanceof Uint8Array)) {
             throw new Error("Expected binary cached vector");
+          }
           expect(decodeMemoryEmbedding(vector.embedding)).toEqual([1 + Number.EPSILON, 0.1]);
           const cached = reader
             .prepare(
@@ -261,8 +265,9 @@ describe("agent schema 21 storage cutover", () => {
             )
             .get()!;
           expect(cached).toMatchObject({ scope: "session-cost-usage-rollup-v3", updated_at: 31 });
-          if (typeof cached.value_json !== "string" || !(cached.blob instanceof Uint8Array))
+          if (typeof cached.value_json !== "string" || !(cached.blob instanceof Uint8Array)) {
             throw new Error("Expected migrated usage envelope/body");
+          }
           expect(decodeUsageCostRollup(cached.value_json, "synthetic", cached.blob)).toEqual(usage);
           expect(reader.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
           expect(reader.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
@@ -349,10 +354,16 @@ describe("agent schema 21 storage cutover", () => {
             const pending = [rejection];
             const causes = new Set<unknown>();
             for (const error of pending) {
-              if (causes.has(error)) continue;
+              if (causes.has(error)) {
+                continue;
+              }
               causes.add(error);
-              if (error instanceof Error && error.cause) pending.push(error.cause);
-              if (error instanceof AggregateError) pending.push(...error.errors);
+              if (error instanceof Error && error.cause) {
+                pending.push(error.cause);
+              }
+              if (error instanceof AggregateError) {
+                pending.push(...error.errors);
+              }
             }
             expect(
               [...causes].some(

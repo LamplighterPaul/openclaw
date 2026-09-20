@@ -78,8 +78,9 @@ describe("usage rollup storage codec", () => {
     const original = entry(512);
     const encoded = encodeUsageCostRollup(original);
     const metadata = JSON.parse(encoded.valueJson);
-    const damaged = encoded.blob.slice();
-    damaged[damaged.length - 1] ^= 1;
+    const damaged = Uint8Array.from(encoded.blob, (byte, index) =>
+      index === encoded.blob.length - 1 ? byte ^ 1 : byte,
+    );
     for (const [valueJson, blob] of [
       [encoded.valueJson, damaged],
       [encoded.valueJson, encoded.blob.subarray(1)],
