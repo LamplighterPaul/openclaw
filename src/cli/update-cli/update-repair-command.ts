@@ -13,8 +13,7 @@ import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js"
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import {
   inspectUpdateRepairDriverAdmission,
-  isAbandonedUpdateRun,
-  isUnacknowledgedAbandonedUpdateRun,
+  isFreshUnacknowledgedAbandonedUpdateRun,
 } from "../../infra/update-run-activity.js";
 import {
   acknowledgeAbandonedUpdateRun,
@@ -24,6 +23,8 @@ import {
   recordUpdateRunRepairContinuation,
 } from "../../infra/update-run-ledger.js";
 import {
+  isAbandonedUpdateRun,
+  isAcknowledgedAbandonedUpdateRun,
   isUnacknowledgedPackageOwnerRefusal,
   type UpdateRunRecord,
 } from "../../infra/update-run-record.js";
@@ -71,8 +72,8 @@ function inspectNewerRecoveryHistory(recoveryRuns: UpdateRunRecord[], env: NodeJ
   const postCoreRuns = history.filter(
     (run) =>
       run.createdAtMs >= oldestRecovery &&
-      isAbandonedUpdateRun(run) &&
-      !run.steps.some((step) => step.step === "reconcile:acknowledged") &&
+      run.status === "failed" &&
+      !isAcknowledgedAbandonedUpdateRun(run) &&
       needsPostCoreRepair(run),
   );
   // A bounded prefix cannot prove absence of interrupted work beyond its tail.
@@ -100,18 +101,23 @@ export async function updateRepairCommand(opts: UpdateFinalizeOptions): Promise<
   if (admission.kind === "conflict") {
     throw new Error(admission.message);
   }
+  const recentRuns = listUpdateRuns({ limit: 100 }, options);
+  const abandonedRuns = recentRuns.filter(
+    (run) => isAbandonedUpdateRun(run) && !isAcknowledgedAbandonedUpdateRun(run),
+  );
+  const recoveryRuns = [...activeRuns, ...abandonedRuns];
   if (admission.kind === "continuation") {
     const continuation = admission.run;
     recordUpdateRunRepairContinuation(continuation.runId, inheritedRunId, options);
     await updateFinalizeCommand(
       opts,
-      activeRuns.filter((run) => run.runId !== continuation.runId).map((run) => run.runId),
+      recoveryRuns.filter((run) => run.runId !== continuation.runId).map((run) => run.runId),
     );
     return;
   }
-  const lastRun = listUpdateRuns({ limit: 1 }, options)[0];
+  const lastRun = recentRuns[0];
   if (
-    !activeRuns.length &&
+    !recoveryRuns.length &&
     opts.channel === undefined &&
     !opts.acceptCapabilities &&
     lastRun &&
@@ -150,11 +156,6 @@ export async function updateRepairCommand(opts: UpdateFinalizeOptions): Promise<
       }
     }
   }
-  const recoveryRuns = activeRuns.length
-    ? activeRuns
-    : lastRun && isUnacknowledgedAbandonedUpdateRun(lastRun)
-      ? [lastRun]
-      : [];
   const history = inspectNewerRecoveryHistory(recoveryRuns, env);
   const recoveryRunIds = [
     ...new Set([...recoveryRuns, ...history.postCoreRuns].map((run) => run.runId)),
@@ -164,6 +165,7 @@ export async function updateRepairCommand(opts: UpdateFinalizeOptions): Promise<
     opts.channel !== undefined ||
     opts.acceptCapabilities ||
     recoveryRuns.length === 0 ||
+    abandonedRuns.some((run) => !isFreshUnacknowledgedAbandonedUpdateRun(run)) ||
     recoveryRuns.some(needsPostCoreRepair) ||
     history.postCoreRuns.length > 0 ||
     history.incomplete

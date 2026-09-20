@@ -4,6 +4,7 @@ import { afterEach, assert, expect, it } from "vitest";
 import { buildVitestRunPlans } from "../scripts/test-projects.test-support.mts";
 import { createPatternFileHelper } from "./helpers/pattern-file.js";
 import { createCliVitestConfig } from "./vitest/vitest.cli.config.ts";
+import { diagnosticForksPool } from "./vitest/vitest.forks-pool.ts";
 import { createGatewayClientVitestConfig } from "./vitest/vitest.gateway-client.config.ts";
 import { createGatewayCoreVitestConfig } from "./vitest/vitest.gateway-core.config.ts";
 import { createGatewayDatabaseWorkersVitestConfig } from "./vitest/vitest.gateway-database-workers.config.ts";
@@ -70,7 +71,6 @@ it.each([
     "src/gateway/server/ws-connection.startup.test.ts",
     "src/gateway/session-message-events.test.ts",
     "src/gateway/worker-environments/worker-session-tool-executor.test.ts",
-    "test/e2e/qa-lab/runtime/gateway-tls-pinning.test.ts",
     "test/plugins/codex-model-catalog.gateway.test.ts",
     "src/gateway/server-methods/models-list.freshness.integration.test.ts",
     "src/gateway/setup-inference.first-signin.integration.test.ts",
@@ -118,7 +118,7 @@ it("routes resume local-node handshakes only through the core broker fork", () =
   const worker = createInfraVitestConfig(env);
   const previous = createCliVitestConfig(env);
   assert(worker.test);
-  expect(worker.test.pool).toBe("forks");
+  expect(worker.test.pool).toBe(diagnosticForksPool);
   for (const [config, expected] of [
     [worker, [file]],
     [previous, []],

@@ -33,6 +33,22 @@ async function withIdentityWorkerState(
 }
 
 describe("device identity shared worker", () => {
+  it("does not initialize an existing empty database during a read", async () => {
+    await withIdentityWorkerState(async (options) => {
+      const directory = path.dirname(options.path);
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(options.path, "", { mode: 0o640 });
+      const artifacts = await fs.readdir(directory);
+      const fileMode = (await fs.stat(options.path)).mode;
+
+      expect(await loadDeviceIdentityIfPresentAsync(options)).toBeNull();
+
+      expect(await fs.readFile(options.path)).toHaveLength(0);
+      expect((await fs.stat(options.path)).mode).toBe(fileMode);
+      expect(await fs.readdir(directory)).toEqual(artifacts);
+    });
+  });
+
   it("creates one identity off the host and reuses an existing-only actor for another key", async () => {
     await withIdentityWorkerState(async (options, stateDir) => {
       const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");

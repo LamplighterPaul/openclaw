@@ -21,7 +21,6 @@ import {
 import { assertSqliteSchemaContains } from "./sqlite-schema-contract.js";
 import {
   inspectUpdateRepairDriverAdmission,
-  isAbandonedUpdateRun,
   isStaleIdentitylessUpdateRun,
   recordedUpdateRunDrivers,
 } from "./update-run-activity.js";
@@ -47,6 +46,7 @@ import {
 } from "./update-run-reader.js";
 import {
   finishUpdateRunRecord,
+  isAbandonedUpdateRun,
   isUnacknowledgedPackageOwnerRefusal,
   type FinishUpdateRunResult,
   type UpdateRunRecord,
@@ -72,6 +72,8 @@ export {
   listUpdateRuns,
   listUpdateRunsAsync,
 } from "./update-run-reader.js";
+
+export { recordUpdateRunDiagnostics } from "./update-run-write.js";
 
 type LedgerDatabase = Pick<DB, "update_runs">;
 type RunPatch = Partial<
@@ -418,6 +420,7 @@ export function recordUpdateRunPhase(
   phase: UpdateRunPhase,
   patch: RunPatch & { step?: UpdateRunStep } = {},
   options: LedgerOptions = {},
+  captureBefore?: Parameters<typeof mutateRun>[3],
 ): UpdateRunRecord {
   return mutateRun(
     runId,
@@ -465,6 +468,7 @@ export function recordUpdateRunPhase(
       }
     },
     options,
+    captureBefore,
   );
 }
 

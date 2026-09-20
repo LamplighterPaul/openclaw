@@ -217,7 +217,26 @@ describe("update-cli child-owned deferred completion", () => {
 
       if (writes) {
         expect(replaceConfigFile).toHaveBeenCalledExactlyOnceWith({ nextConfig: config });
-        expect(mutateConfigFileWithRetry).toHaveBeenCalledWith({ mutate: expect.any(Function) });
+        expect(mutateConfigFileWithRetry).toHaveBeenCalledExactlyOnceWith({
+          mutate: expect.any(Function),
+          ...(mode === "finalize"
+            ? {
+                writeOptions: {
+                  assertCurrent: expect.any(Function),
+                  beforeCommit: expect.any(Function),
+                  observe: false,
+                },
+              }
+            : {}),
+        });
+        if (mode === "finalize") {
+          expect(
+            vi.mocked(mutateConfigFileWithRetry).mock.calls[0]?.[0].writeOptions?.assertCurrent,
+          ).toThrow("Update operation ownership has closed.");
+          expect(
+            vi.mocked(mutateConfigFileWithRetry).mock.calls[0]?.[0].writeOptions?.beforeCommit,
+          ).toThrow("Update operation ownership has closed.");
+        }
       } else {
         expect(replaceConfigFile).not.toHaveBeenCalled();
       }

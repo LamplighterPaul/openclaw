@@ -296,16 +296,19 @@ describe("runtime placement observations", () => {
     );
   });
 
-  it.each(["push", "pull-request"] as const)(
-    "admits complete %s runtime placement without changing inventories or precise capacity",
-    (compactMode) => {
+  it.each(
+    (["push", "pull-request"] as const).flatMap((compactMode) =>
+      [false, true].map((gatewayRecipient) => ({ compactMode, gatewayRecipient })),
+    ),
+  )(
+    "admits complete $compactMode runtime placement without changing inventories or precise capacity (Gateway recipient: $gatewayRecipient)",
+    ({ compactMode, gatewayRecipient }) => {
       const originalShards = fullSuiteVitestShards.slice();
       const runtimeConfig = "test/vitest/vitest.runtime-config.config.ts";
       const infrastructure = "test/vitest/vitest.infra.config.ts";
       const gatewayServer = "test/vitest/vitest.gateway-server-isolated.config.ts";
       const gatewayWorkers = "test/vitest/vitest.gateway-database-workers.config.ts";
       const gatewayConfigs = [gatewayServer, gatewayWorkers];
-      // This regression cohort is fixed; unrelated declared readers remain in the live plan.
       const requiredGatewayConsumers = new Map([
         ["src/gateway/server.chat-cli-auth.test.ts", gatewayServer],
         ["src/gateway/server.cli-watchdog.test.ts", gatewayServer],
@@ -314,7 +317,11 @@ describe("runtime placement observations", () => {
         ["src/gateway/setup-inference.first-signin.integration.test.ts", gatewayWorkers],
         ["test/plugins/codex-model-catalog.gateway.test.ts", gatewayWorkers],
       ]);
-      const configs = new Set([runtimeConfig, infrastructure, ...gatewayConfigs]);
+      const configs = new Set([
+        runtimeConfig,
+        infrastructure,
+        ...(gatewayRecipient ? [] : gatewayConfigs),
+      ]);
       const compactSpy = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
       const spy = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
       const options = {
@@ -332,48 +339,60 @@ describe("runtime placement observations", () => {
               projects: shard.projects.filter((config) => configs.has(config)),
             }))
             .filter((shard) => shard.projects.length > 0),
+          ...(gatewayRecipient
+            ? [
+                ["agentic-gateway-server-isolated", "gateway-methods-isolated"],
+                ["agentic-agents-core-subagents", "unit-support"],
+              ].map(([name, config]) => ({
+                name: name!,
+                config: `fixture-${name}.config.ts`,
+                projects: [`test/vitest/vitest.${config}.config.ts`],
+              }))
+            : []),
         );
         const before = createNodeTestShardBundles(options);
         const runtimeGroups = before
           .flatMap((job) => job.groups)
           .filter((group) => group.pretestBuildMode === "runtime");
-        expect(runtimeGroups).toHaveLength(4);
-        const gatewayRuntimeGroup = runtimeGroups.find((group) =>
-          group.configs.includes(gatewayWorkers),
-        );
-        expect(gatewayRuntimeGroup?.configs.toSorted()).toEqual(gatewayConfigs.toSorted());
-        const requiredFiles = new Set(requiredGatewayConsumers.keys());
-        const projected = before.flatMap(({ groups }) =>
-          groups.flatMap((group) =>
-            (group.includePatterns ?? [])
-              .filter((file) => requiredFiles.has(file))
+        expect(runtimeGroups).toHaveLength(gatewayRecipient ? 3 : 4);
+        if (!gatewayRecipient) {
+          const gatewayRuntimeGroup = runtimeGroups.find((group) =>
+            group.configs.includes(gatewayWorkers),
+          );
+          expect(gatewayRuntimeGroup?.configs.toSorted()).toEqual(gatewayConfigs.toSorted());
+          const requiredFiles = new Set(requiredGatewayConsumers.keys());
+          const projected = before.flatMap(({ groups }) =>
+            groups.flatMap((group) =>
+              (group.includePatterns ?? [])
+                .filter((file) => requiredFiles.has(file))
+                .map((file) => ({
+                  file,
+                  configs: group.configs.toSorted(),
+                  pretestBuildMode: group.pretestBuildMode,
+                })),
+            ),
+          );
+          expect(projected.toSorted((a, b) => a.file.localeCompare(b.file))).toEqual(
+            [...requiredFiles]
+              .toSorted((a, b) => a.localeCompare(b))
               .map((file) => ({
                 file,
-                configs: group.configs.toSorted(),
-                pretestBuildMode: group.pretestBuildMode,
+                configs: gatewayConfigs.toSorted(),
+                pretestBuildMode: "runtime",
               })),
-          ),
-        );
-        expect(projected.toSorted((a, b) => a.file.localeCompare(b.file))).toEqual(
-          [...requiredFiles]
-            .toSorted((a, b) => a.localeCompare(b))
-            .map((file) => ({
-              file,
-              configs: gatewayConfigs.toSorted(),
-              pretestBuildMode: "runtime",
-            })),
-        );
-        for (const config of gatewayConfigs) {
-          expect(
-            listVitestRuntimeConsumerFiles([config])
-              .filter((file) => requiredFiles.has(file))
-              .toSorted(),
-          ).toEqual(
-            [...requiredGatewayConsumers]
-              .filter(([, owner]) => owner === config)
-              .map(([file]) => file)
-              .toSorted(),
           );
+          for (const config of gatewayConfigs) {
+            expect(
+              listVitestRuntimeConsumerFiles([config])
+                .filter((file) => requiredFiles.has(file))
+                .toSorted(),
+            ).toEqual(
+              [...requiredGatewayConsumers]
+                .filter(([, owner]) => owner === config)
+                .map(([file]) => file)
+                .toSorted(),
+            );
+          }
         }
         const selected = ["src/config/state-startup-corpus.test.ts"];
         const preciseBefore = createSelectedNodeTestShardBundles(selected, {
@@ -436,6 +455,25 @@ describe("runtime placement observations", () => {
           (job, index) => JSON.stringify(job.groups) !== JSON.stringify(before[index]!.groups),
         );
         expect(changed).toHaveLength(2);
+        if (gatewayRecipient) {
+          const recipient = changed.find((job) =>
+            before.some(
+              (original) =>
+                original.checkName === job.checkName &&
+                original.pretestBuildMode === undefined &&
+                original.planConcurrency === 1 &&
+                original.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
+            ),
+          )!;
+          expect(recipient, "serial Gateway recipient").toBeDefined();
+          const original = before.find((job) => job.checkName === recipient.checkName)!;
+          expect(recipient.env).toEqual(original.env);
+          for (const group of original.groups) {
+            expect(recipient.groups.find((entry) => entry.shard_name === group.shard_name)).toEqual(
+              group,
+            );
+          }
+        }
         for (const job of changed) {
           expect(job.predictedSeconds).toBeLessThanOrEqual(440);
           expect(job.planConcurrency).toBe(1);
@@ -444,7 +482,9 @@ describe("runtime placement observations", () => {
           );
         }
         const crossing = changed.flatMap((job) =>
-          job.groups.filter((group) => group.runner !== job.runner),
+          job.groups
+            .filter((group) => group.runner !== job.runner)
+            .map((group) => Object.assign({}, group, { env: { ...job.env, ...group.env } })),
         );
         expect(crossing.length).toBeGreaterThan(0);
         expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
