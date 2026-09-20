@@ -233,6 +233,45 @@ describe("exhausted delivery producer recovery", () => {
       expect(readQueuedEntry(tmpDir(), id)).not.toHaveProperty("deliveryCompletion");
     },
   );
+  it.each(["startup", "recurring"] as const)(
+    "%s settles a producer-claimed entry whose durable completion has gone stale",
+    async (mode) => {
+      const id = "stale-producer-claimed";
+      const now = Date.now();
+      const completion = {
+        kind: "pending-final" as const,
+        deliveryId: id,
+        intentId: "stale-intent",
+        sessionId: "stale-session",
+        sessionKey: "agent:main:directchat:direct:recipient",
+        storePath: path.join(tmpDir(), "sessions.json"),
+      };
+      await sessionAccessor.replaceSessionEntry(completion, {
+        sessionId: completion.sessionId,
+        updatedAt: now,
+        pendingFinalDelivery: {
+          kind: "replayable",
+          text: "pending final",
+          context: { channel: "directchat", to: "recipient" },
+          createdAt: now,
+          intentId: completion.intentId,
+          deliveries: [],
+        },
+      });
+      // Keep the attempt budget unused to reach completed-owner acknowledgement.
+      await enqueue(id, true, completion);
+      const claimId = await queueStorage.claimDeliveryPlatformSendAttempt(id, tmpDir());
+      if (!claimId) {
+        throw new Error("Expected producer custody");
+      }
+      setProducerExpiry(id, Date.now() - 1);
+
+      await recover(mode);
+
+      expect(queueStatus(id)).toBeUndefined();
+    },
+  );
+
   it("preserves suppressed payload outcomes when a rejected delivery resumes owner settlement", async () => {
     const id = "rejected-batch-settlement";
     const completion = await preparePendingFinal(
