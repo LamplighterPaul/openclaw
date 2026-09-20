@@ -310,7 +310,9 @@ suite.define(() => {
       await expect.poll(() => secondShortcut.count()).toBe(1);
       // Finish the picker's opening scale before recording its baseline. The top
       // transform origin keeps the anchor gap stable while box geometry still grows.
-      await picker.locator('wa-popup [part~="popup"]').evaluate(finishElementAnimations);
+      await picker
+        .locator(':scope > wa-popup[data-anchored-overlay] > [part~="popup"]')
+        .evaluate(finishElementAnimations);
       const menuGeometry = () =>
         page.evaluate(() => {
           const anchor = document.querySelector('[data-chat-model-select="true"]');
