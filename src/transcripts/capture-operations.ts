@@ -63,7 +63,7 @@ export async function stopTranscriptCapture(params: {
   if (selectedActive?.stopping) {
     return skip("stopping");
   }
-  revokeTranscriptStartRetries(params.ctx, session);
+  revokeTranscriptStartRetries(params.ctx.stateDir, session);
   if (selectedActive) {
     selectedActive.stopping = true;
   }

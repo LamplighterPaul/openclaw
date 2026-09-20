@@ -345,7 +345,7 @@ function startTranscriptsAutoStartEntry(
       if (error instanceof TranscriptStartError) {
         clearRetry();
         if (!stopped && error.retry) {
-          startRetry = retainTranscriptStartRetry(ctx, error.retry);
+          startRetry = retainTranscriptStartRetry(ctx.stateDir, error.retry);
         }
       }
       throw error;

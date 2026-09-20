@@ -1,4 +1,3 @@
-import type { TranscriptsRuntimeContext } from "./capture.js";
 import type { TranscriptSessionDescriptor } from "./provider-types.js";
 
 export class TranscriptStartError extends Error {
@@ -19,10 +18,10 @@ const pendingStartRetries = new Set<{
 }>();
 
 export function retainTranscriptStartRetry(
-  ctx: TranscriptsRuntimeContext,
+  stateDir: string,
   retry: NonNullable<TranscriptStartError["retry"]>,
 ) {
-  const owner = { stateDir: ctx.stateDir, session: retry.session };
+  const owner = { stateDir, session: retry.session };
   pendingStartRetries.add(owner);
   return {
     session: retry.session,
@@ -40,14 +39,14 @@ export function retainTranscriptStartRetry(
 }
 
 export function revokeTranscriptStartRetries(
-  ctx: TranscriptsRuntimeContext,
+  stateDir: string,
   session: TranscriptSessionDescriptor,
 ) {
   // Repeated historical stop preserves stoppedAt and summary inputs. Revoke
   // pending process authority explicitly instead of rewriting that history.
   for (const owner of pendingStartRetries) {
     if (
-      owner.stateDir === ctx.stateDir &&
+      owner.stateDir === stateDir &&
       owner.session.sessionId === session.sessionId &&
       owner.session.startedAt === session.startedAt
     ) {
