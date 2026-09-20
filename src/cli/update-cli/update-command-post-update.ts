@@ -276,7 +276,11 @@ export async function finishUpdate(
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
     let finalResult = completeUpdateCommandResult(params, result);
-    let root = finalResult.root ?? params.root;
+    const serviceVerdict = currentServiceStop()?.serviceUpdateVerdict;
+    let root =
+      finalResult.recovery?.packageRollbackVerified && serviceVerdict?.kind === "owned"
+        ? serviceVerdict.root
+        : (finalResult.root ?? params.root);
     pendingResult = finalResult;
     pendingNotify = notify;
     if (!restoreFailure) {
@@ -323,7 +327,6 @@ export async function finishUpdate(
         stderrTail: formatErrorMessage(restoreFailure.cause),
       });
     }
-    assertCurrent();
     const completedBeforeCleanup = deferredTerminal
       ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
       : undefined;
