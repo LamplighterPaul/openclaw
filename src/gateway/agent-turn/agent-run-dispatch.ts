@@ -1,6 +1,7 @@
 import { normalizeAgentRunTimeoutPhase } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import { err, ok } from "@openclaw/normalization-core/result";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveAdmittedRunActiveAssertion } from "../../agents/admitted-run-context.js";
 import { withAgentCommandExecutionIdentitySpawnFacts } from "../../agents/agent-command-execution-identity-spawn.js";
 import {
   buildAgentRunTerminalOutcome,
@@ -38,6 +39,7 @@ import {
 import { formatErrorMessage, readErrorName, toErrorObject } from "../../infra/errors.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import { defaultRuntime } from "../../runtime.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-contract.js";
 import {
   prepareRunningTaskRun,
@@ -330,12 +332,37 @@ export function dispatchAgentRunFromGateway(params: {
     const task = trackedTask;
     const trackedTaskBinding = task
       ? createExecutionStartedOwnerBinding(
-          (admitted: Parameters<NonNullable<AgentCommandOpts["onPostAdmittedRunContext"]>>[0]) => {
+          async (
+            admitted: Parameters<NonNullable<AgentCommandOpts["onPostAdmittedRunContext"]>>[0],
+          ) => {
+            const { taskId, parentFlowId } = task;
             try {
-              const taskResult = bindTaskRunExecution({ admitted, taskId: task.taskId });
-              const flowResult = task.parentFlowId
+              if (!admitted.executionIdentityToken) {
+                return;
+              }
+              const assertAdmitted = resolveAdmittedRunActiveAssertion(admitted);
+              if (!assertAdmitted) {
+                throw new Error("Gateway execution authority closed before owner binding");
+              }
+              const assertBindingCurrent = () => {
+                assertCurrent();
+                assertAdmitted();
+              };
+              const context = captureOpenClawStateWorkerContext();
+              const taskResult = await bindTaskRunExecution({
+                admitted,
+                taskId,
+                context,
+                assertCurrent: assertBindingCurrent,
+              });
+              const flowResult = parentFlowId
                 ? isRetainedExecutionOwnerBinding(taskResult)
-                  ? bindTaskFlowExecution({ admitted, flowId: task.parentFlowId })
+                  ? await bindTaskFlowExecution({
+                      admitted,
+                      flowId: parentFlowId,
+                      context,
+                      assertCurrent: assertBindingCurrent,
+                    })
                   : taskResult
                 : undefined;
               if (
