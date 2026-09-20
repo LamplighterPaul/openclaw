@@ -8,6 +8,7 @@ import {
 import { clearAllCliSessions } from "./cli-session-binding.js";
 import type {
   SessionTranscriptAccessScope,
+  SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
   TranscriptAppendRefusal,
   TranscriptEvent,
@@ -46,7 +47,6 @@ import {
 import {
   readTranscriptGenerationInTransaction,
   readTranscriptContextVersionInTransaction,
-  type SessionTranscriptContextVersion,
 } from "./session-accessor.sqlite-transcript-state.js";
 import {
   appendTranscriptEventInTransaction,
