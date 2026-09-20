@@ -32,7 +32,7 @@ describe("DiffArtifactStore", () => {
       blobStore,
       reopen: reopenStore,
       cleanup: cleanupRootDir,
-    } = await createDiffStoreHarness("openclaw-diffs-store-"));
+    } = await createDiffStoreHarness("openclaw-diffs-store-", { nativeKernel: true }));
   });
 
   afterEach(async () => {
@@ -145,6 +145,7 @@ describe("DiffArtifactStore", () => {
   });
 
   it("expires artifacts after the ttl", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const artifact = await store.createArtifact({
       html: "<html>demo</html>",
       title: "Demo",
@@ -154,7 +155,7 @@ describe("DiffArtifactStore", () => {
     });
 
     await store.stopCleanup();
-    await expireDiffArtifactForTest(rootDir, blobStore, artifact.id, 1_000);
+    await expireDiffArtifactForTest(rootDir, artifact.id, 1_000);
     const loaded = await store.readAuthorizedViewer(artifact.id, artifact.token);
     expect(loaded).toBeNull();
     await expect(blobStore.deleteExpired()).resolves.toEqual([]);
@@ -200,6 +201,7 @@ describe("DiffArtifactStore", () => {
   });
 
   it("expires standalone file artifacts using ttl metadata", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const standalone = await store.createStandaloneFileArtifact({
       format: "png",
       ttlMs: 1_000,
@@ -208,7 +210,7 @@ describe("DiffArtifactStore", () => {
     await store.completeFileArtifact(standalone.id);
 
     await store.stopCleanup();
-    await expireDiffArtifactForTest(rootDir, blobStore, standalone.id, 1_000);
+    await expireDiffArtifactForTest(rootDir, standalone.id, 1_000);
     await store.cleanupExpired();
 
     const error = await fs.stat(path.dirname(standalone.filePath)).then(
@@ -238,6 +240,7 @@ describe("DiffArtifactStore", () => {
   });
 
   it("removes only expired file rows and leaves live materializations", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const expired = await store.createStandaloneFileArtifact({ ttlMs: 1_000 });
     const live = await store.createStandaloneFileArtifact({ ttlMs: 60_000 });
     await fs.writeFile(expired.filePath, "expired");
@@ -246,7 +249,9 @@ describe("DiffArtifactStore", () => {
     await store.completeFileArtifact(live.id);
 
     await store.stopCleanup();
-    await expireDiffArtifactForTest(rootDir, blobStore, expired.id, 1_000);
+    vi.setSystemTime(Date.parse(expired.expiresAt) + 1);
+    await expect(blobStore.lookup(expired.id)).resolves.toBeUndefined();
+    await expireDiffArtifactForTest(rootDir, expired.id, 1_000);
     await store.cleanupExpired();
 
     await expect(fs.stat(path.dirname(expired.filePath))).rejects.toMatchObject({ code: "ENOENT" });
@@ -254,12 +259,13 @@ describe("DiffArtifactStore", () => {
   });
 
   it("keeps expired file metadata claimable across later blob writes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const expired = await store.createStandaloneFileArtifact({ ttlMs: 1_000 });
     await fs.writeFile(expired.filePath, "expired");
     await store.completeFileArtifact(expired.id);
 
     await store.stopCleanup();
-    await expireDiffArtifactForTest(rootDir, blobStore, expired.id, 1_000);
+    await expireDiffArtifactForTest(rootDir, expired.id, 1_000);
     await blobStore.register(
       "later-write",
       new Uint8Array(),
@@ -375,7 +381,7 @@ describe("DiffArtifactStore", () => {
     const oldTime = new Date(now.getTime() - 25 * 60 * 60 * 1_000);
     await fs.utimes(path.dirname(artifact.filePath), oldTime, oldTime);
     await store.stopCleanup();
-    await expireDiffArtifactForTest(rootDir, blobStore, artifact.id, 1_000);
+    await expireDiffArtifactForTest(rootDir, artifact.id, 1_000);
     vi.setSystemTime(new Date(now.getTime() + 2_000));
 
     await store.cleanupExpired();

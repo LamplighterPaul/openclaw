@@ -1,4 +1,9 @@
+import { serialize } from "node:v8";
 import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
+import {
+  reserveSqliteWorkerInputPreparation,
+  type SqliteWorkerInputPreparation,
+} from "../infra/sqlite-worker-store.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -18,18 +23,25 @@ async function execute<T>(
   env: NodeJS.ProcessEnv | undefined,
   name: keyof PluginBlobWorkerOperations,
   dispatch: (scope: Scope) => Promise<T>,
+  prepare?: () => SqliteWorkerInputPreparation,
 ): Promise<T> {
   const databasePath = resolveOpenClawStateSqlitePath(env ?? process.env);
   const description = pluginBlobWorkerOperations[name];
   let dispatched = false;
+  let preparation: SqliteWorkerInputPreparation | undefined;
   try {
+    preparation = prepare?.();
     const context = captureOpenClawStateWorkerContext({ path: databasePath, env });
     const { runOpenClawStateWorkerOperation } =
       await import("../state/openclaw-state-worker-store.js");
-    return await runOpenClawStateWorkerOperation(context, async (scope: Scope) => {
-      dispatched = true;
-      return await dispatch(scope);
-    });
+    return await runOpenClawStateWorkerOperation(
+      context,
+      async (scope: Scope) => {
+        dispatched = true;
+        return await (preparation ? preparation.handoff(() => dispatch(scope)) : dispatch(scope));
+      },
+      { requireStateLifecycle: true, assertCurrent: preparation?.assertCurrent },
+    );
   } catch (error) {
     throw wrapPluginBlobError(
       error,
@@ -39,13 +51,36 @@ async function execute<T>(
       env,
       databasePath,
     );
+  } finally {
+    preparation?.release();
+  }
+}
+
+function captureRegistrationInput(
+  type: "pluginBlob.register" | "pluginBlob.registerIfAbsent",
+  input: PluginBlobWorkerOperations["pluginBlob.register"]["input"],
+): SqliteWorkerInputPreparation {
+  const metadataBytes = serialize({
+    type,
+    input: { ...input, bytes: new Uint8Array() },
+  }).byteLength;
+  const preparation = reserveSqliteWorkerInputPreparation(input.bytes.byteLength + metadataBytes);
+  try {
+    input.bytes = Uint8Array.from(input.bytes);
+    return preparation;
+  } catch (error) {
+    preparation.release();
+    throw error;
   }
 }
 
 export function registerPluginBlobInWorker(params: Input<"pluginBlob.register">): Promise<void> {
   const { env, ...input } = params;
-  return execute(env, "pluginBlob.register", (scope) =>
-    scope.execute({ type: "pluginBlob.register", input }),
+  return execute(
+    env,
+    "pluginBlob.register",
+    (scope) => scope.execute({ type: "pluginBlob.register", input }),
+    () => captureRegistrationInput("pluginBlob.register", input),
   );
 }
 
@@ -53,8 +88,11 @@ export function registerPluginBlobIfAbsentInWorker(
   params: Input<"pluginBlob.registerIfAbsent">,
 ): Promise<boolean> {
   const { env, ...input } = params;
-  return execute(env, "pluginBlob.registerIfAbsent", (scope) =>
-    scope.execute({ type: "pluginBlob.registerIfAbsent", input }),
+  return execute(
+    env,
+    "pluginBlob.registerIfAbsent",
+    (scope) => scope.execute({ type: "pluginBlob.registerIfAbsent", input }),
+    () => captureRegistrationInput("pluginBlob.registerIfAbsent", input),
   );
 }
 

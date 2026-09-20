@@ -277,27 +277,34 @@ describe("diffs tool", () => {
   });
 
   it("honors ttlSeconds for artifact-only file output", async () => {
-    const screenshotter = createPngScreenshotter();
-    const tool = createToolWithScreenshotter(store, screenshotter);
-
-    const result = await tool.execute?.("tool-2c-ttl", {
-      before: "one\n",
-      after: "two\n",
-      mode: "file",
-      ttlSeconds: "1",
+    await fs.mkdir(rootDir, { recursive: true });
+    const fixture = await createDiffStoreHarness("openclaw-diffs-tool-ttl-", {
+      nativeKernel: true,
     });
-    const filePath = requireString(readDetails(result).filePath, "filePath");
-    await fs.access(filePath);
-
-    await store.stopCleanup();
-    await expireDiffArtifactForTest(
-      rootDir,
-      blobStore,
-      requireString(readDetails(result).artifactId, "artifactId"),
-      1000,
-    );
-    await store.cleanupExpired();
-    await expectFsEnoent(fs.stat(filePath));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const screenshotter = createPngScreenshotter();
+      const tool = createToolWithScreenshotter(fixture.store, screenshotter);
+      const result = await tool.execute?.("tool-2c-ttl", {
+        before: "one\n",
+        after: "two\n",
+        mode: "file",
+        ttlSeconds: "1",
+      });
+      const filePath = requireString(readDetails(result).filePath, "filePath");
+      await fs.access(filePath);
+      await fixture.store.stopCleanup();
+      await expireDiffArtifactForTest(
+        fixture.rootDir,
+        requireString(readDetails(result).artifactId, "artifactId"),
+        1000,
+      );
+      await fixture.store.cleanupExpired();
+      await expectFsEnoent(fs.stat(filePath));
+    } finally {
+      vi.useRealTimers();
+      await fixture.cleanup();
+    }
   });
 
   it("caps artifact-only ttlSeconds that bypass schema validation", async () => {
@@ -339,7 +346,6 @@ describe("diffs tool", () => {
     await store.stopCleanup();
     await expireDiffArtifactForTest(
       rootDir,
-      blobStore,
       requireString(readDetails(result).artifactId, "artifactId"),
       60000,
     );

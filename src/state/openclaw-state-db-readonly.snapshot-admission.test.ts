@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
@@ -13,7 +12,7 @@ import type {
 } from "./openclaw-state-read.types.js";
 
 const mocks = vi.hoisted(() => ({
-  capture: vi.fn<(databasePath: string) => OpenClawStateDatabaseReadAdmission>(),
+  capture: vi.fn(),
   assertCurrent: vi.fn<() => void>(),
   assertFresh: vi.fn<() => void>(),
   prepare: vi.fn(),
@@ -69,14 +68,10 @@ vi.mock("./openclaw-state-read-worker.js", () => ({
     read: mocks.read,
     validateFresh: async () => {},
     close: async () => {},
-    readInterruptedOutcome: async () => undefined,
   }),
 }));
 
-import {
-  isStateDatabaseReadAdmissionInvalidatedError,
-  type OpenClawStateDatabaseReadAdmission,
-} from "./openclaw-state-db-async-lifecycle.js";
+import { isStateDatabaseReadAdmissionInvalidatedError } from "./openclaw-state-db-async-lifecycle.js";
 import {
   executeExistingOpenClawStateRead,
   getActiveOpenClawStateDatabaseReadSnapshot,
@@ -94,11 +89,7 @@ beforeEach(() => {
   mocks.assertCurrent.mockReset();
   mocks.assertFresh.mockReset();
   mocks.cleanup.mockReset().mockResolvedValue(true);
-  mocks.capture.mockReset().mockImplementation((databasePath) => ({
-    databasePath,
-    identity: readDatabasePathIdentitySync(databasePath),
-    assertCurrent: mocks.assertCurrent,
-  }));
+  mocks.capture.mockReset().mockReturnValue({ identity: {}, assertCurrent: mocks.assertCurrent });
   mocks.prepare.mockReset().mockResolvedValue({
     location: "/fixture/private.sqlite",
     cleanupAsync: mocks.cleanup,
@@ -255,20 +246,21 @@ it.each(["snapshot", "disposable"] as const)(
       const callback = async () => {
         escape = AsyncLocalStorage.snapshot();
         read = executeExistingOpenClawStateRead({ path: source }, { type: "fleet.list" });
-        await Promise.race([started.promise, read]);
+        await started.promise;
       };
       const closing =
         kind === "snapshot"
           ? withOpenClawStateDatabaseReadSnapshot(callback, { path: source })
           : withDisposableOpenClawStateReads(source, callback);
+      await startedClosing.promise;
       try {
-        await Promise.race([startedClosing.promise, closing]);
         expect(mocks.cleanup).not.toHaveBeenCalled();
         expect(await escape(() => probeRetiredAdmission(source))).toEqual(rejectedAdmissions);
         expect(mocks.read).toHaveBeenCalledOnce();
       } finally {
         finishRead.resolve();
-        await Promise.all([read, closing]);
+        await read;
+        await closing;
       }
       expect(await read).toEqual(expected.value);
       expect(await escape(() => probeRetiredAdmission(source))).toEqual(rejectedAdmissions);

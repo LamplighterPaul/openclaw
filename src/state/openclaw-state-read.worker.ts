@@ -1,8 +1,10 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
@@ -12,13 +14,19 @@ import {
 } from "../plugin-state/plugin-blob-store.sqlite.js";
 import { isPluginBlobReadCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
+import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
+import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
-import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-read-connection.js";
+import {
+  readOpenClawStateReadOnlyLocation,
+  withOpenClawStateReadOnlyLocation,
+} from "./openclaw-state-db-read-connection.js";
 import type {
   OpenClawStateReadReply,
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
   if (!isRecord(input) || !isRecord(input.context) || !isRecord(input.command)) {
@@ -42,84 +50,76 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
       input.command.type === "admit" ||
+      input.command.type === "agentDatabaseRegistry.read" ||
+      (input.command.type === "userProfiles.avatar.reconcile" &&
+        typeof input.command.profileId === "string") ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
         (typeof input.command.input.runId === "string" ||
           typeof input.command.input.executionId === "string")) ||
+      (input.command.type === "workspace.snapshot" &&
+        typeof input.command.workspaceDir === "string") ||
       input.command.type === "fleet.list" ||
       input.command.type === "nodeHost.config" ||
+      (input.command.type === "onboardingRecommendations.read" &&
+        typeof input.command.configKey === "string") ||
       (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
   );
 }
 
 serveWorkerTasks((input): OpenClawStateReadReply => {
   let sourceAdmitted: true | undefined;
+  let nativeCleanupFailure: OpenClawStateReadReply["nativeCleanupFailure"];
   try {
     if (!isReadRequest(input)) {
       throw new Error("Shared-state reader requires a captured state location and read command");
     }
-    return runWithSqliteWorkerStateContext(input.context, () =>
-      withStateDatabaseCoordinatorRuntimeDirectory(input.context.coordinatorRuntime, () => {
-        if (input.checkFreshAdmission) {
-          openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-            input.databasePath,
-            input.context.environment,
-          );
-        }
-        const { command } = input;
-        if (command.type === "admit") {
-          return { ok: true, type: "admit" };
-        }
-        return withOpenClawStateReadOnlyLocation(
-          ({ db }) => {
-            sourceAdmitted = true;
-            if (command.type === "audit.run.inspect") {
-              try {
-                return {
-                  ok: true,
-                  type: command.type,
-                  sourceAdmitted,
-                  result: {
-                    status: "inspected",
-                    inspection: inspectExecutionIdentityRunInDatabase(db, command.input),
-                  },
+    const reply = runWithSqliteWorkerStateContext(input.context, () =>
+      withStateDatabaseCoordinatorRuntimeDirectory(
+        input.context.coordinatorRuntime,
+        (): OpenClawStateReadReply => {
+          if (input.checkFreshAdmission) {
+            openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+              input.databasePath,
+              input.context.environment,
+              (error) => {
+                nativeCleanupFailure = {
+                  error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
                 };
-              } catch (error) {
-                if (!(error instanceof ExecutionDecisionCursorError)) {
-                  throw error;
-                }
-                return {
-                  ok: true,
-                  type: command.type,
-                  sourceAdmitted,
-                  result: { status: "invalid-cursor", message: error.message },
-                };
-              }
-            }
-            switch (command.type) {
-              case "nodeHost.config":
-                return {
-                  ok: true,
-                  type: command.type,
-                  sourceAdmitted,
-                  row: readConfigMachineStateRowInDatabase(db, command.type),
-                };
-              case "fleet.list":
-                return {
-                  ok: true,
-                  type: command.type,
-                  sourceAdmitted,
-                  cells: listFleetCellsInDatabase(db),
-                };
-              case "fleet.get":
-                return {
-                  ok: true,
-                  type: command.type,
-                  sourceAdmitted,
-                  cell: getFleetCellInDatabase(db, command.tenantId),
-                };
-              case "pluginBlob.lookup":
+              },
+            );
+          }
+          const { command } = input;
+          if (command.type === "admit") {
+            return { ok: true, type: "admit" };
+          }
+          if (command.type === "agentDatabaseRegistry.read") {
+            const result = readOpenClawStateReadOnlyLocation(
+              ({ db }) => {
+                sourceAdmitted = true;
+                return readRegisteredAgentDatabaseRows(db, input.databasePath, false);
+              },
+              input.databasePath,
+              input.location,
+              undefined,
+              input.expectedIdentity,
+              input.snapshotRoot,
+            );
+            return {
+              ok: true,
+              type: command.type,
+              sourceAdmitted,
+              result:
+                result.status === "available"
+                  ? { status: "available", entries: result.value }
+                  : { status: "unavailable" },
+            };
+          }
+          return withOpenClawStateReadOnlyLocation(
+            ({ db }) => {
+              sourceAdmitted = true;
+              if (command.type === "pluginBlob.lookup") {
                 return {
                   ok: true,
                   type: command.type,
@@ -130,7 +130,8 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                     path: input.databasePath,
                   }),
                 };
-              case "pluginBlob.entries":
+              }
+              if (command.type === "pluginBlob.entries") {
                 return {
                   ok: true,
                   type: command.type,
@@ -141,17 +142,92 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                     path: input.databasePath,
                   }),
                 };
-            }
-            return command satisfies never;
-          },
-          input.databasePath,
-          input.location,
-          undefined,
-          input.expectedIdentity,
-          input.snapshotRoot,
-        );
-      }),
+              }
+              if (command.type === "onboardingRecommendations.read") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  record: readOnboardingRecommendationsInDatabase(db, command.configKey),
+                };
+              }
+              if (command.type === "audit.run.inspect") {
+                try {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: {
+                      status: "inspected",
+                      inspection: inspectExecutionIdentityRunInDatabase(db, command.input),
+                    },
+                  };
+                } catch (error) {
+                  if (!(error instanceof ExecutionDecisionCursorError)) {
+                    throw error;
+                  }
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: { status: "invalid-cursor", message: error.message },
+                  };
+                }
+              }
+              if (command.type === "nodeHost.config") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  row: readConfigMachineStateRowInDatabase(db, command.type),
+                };
+              }
+              if (command.type === "workspace.snapshot") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  snapshot: readWorkspaceStateSnapshotForDirectoryInDatabase({
+                    workspaceDir: command.workspaceDir,
+                    database: { db, path: input.databasePath },
+                  }),
+                };
+              }
+              if (command.type === "userProfiles.avatar.reconcile") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  profile: runSqliteDeferredTransactionSync(
+                    db,
+                    () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                  ),
+                };
+              }
+              return command.type === "fleet.list"
+                ? {
+                    ok: true,
+                    type: "fleet.list",
+                    sourceAdmitted,
+                    cells: listFleetCellsInDatabase(db),
+                  }
+                : {
+                    ok: true,
+                    type: "fleet.get",
+                    sourceAdmitted,
+                    cell: getFleetCellInDatabase(db, command.tenantId),
+                  };
+            },
+            input.databasePath,
+            input.location,
+            undefined,
+            input.expectedIdentity,
+            input.snapshotRoot,
+          );
+        },
+      ),
     );
+    return nativeCleanupFailure ? { ...reply, nativeCleanupFailure } : reply;
   } catch (value) {
     const error = toStringifiedError(value);
     return {
@@ -159,6 +235,7 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
       sourceAdmitted,
       message: error.message,
       error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
+      ...(nativeCleanupFailure ? { nativeCleanupFailure } : {}),
     };
   }
 });

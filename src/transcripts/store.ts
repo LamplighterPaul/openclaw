@@ -5,7 +5,7 @@ import type { TranscriptUtterance as ProjectedTranscriptUtterance } from "../../
 import { sha256File, sha256Hex } from "../infra/crypto-digest.js";
 import { ensureAbsoluteDirectory } from "../infra/fs-safe.js";
 import { executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
-import { iterateOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import { iterateOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-read-connection.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -599,25 +599,22 @@ export class TranscriptsStore {
       });
     }
     if (includeSummary) {
-      if (storedSummary.summary) {
-        exportedHashes["summary.json"] = await writeTranscriptArtifact(
-          sessionDir,
-          "summary.json",
-          `${JSON.stringify(storedSummary.summary, null, 2)}\n`,
-        );
-      } else {
-        await removeTranscriptArtifact(sessionDir, "summary.json");
-        removedExports.add("summary.json");
-      }
-      if (storedSummary.markdown !== undefined) {
-        exportedHashes["summary.md"] = await writeTranscriptArtifact(
-          sessionDir,
-          "summary.md",
-          normalizeExportText(storedSummary.markdown),
-        );
-      } else {
-        await removeTranscriptArtifact(sessionDir, "summary.md");
-        removedExports.add("summary.md");
+      const summaries = {
+        "summary.json": storedSummary.summary
+          ? `${JSON.stringify(storedSummary.summary, null, 2)}\n`
+          : undefined,
+        "summary.md":
+          storedSummary.markdown === undefined
+            ? undefined
+            : normalizeExportText(storedSummary.markdown),
+      };
+      for (const [fileName, content] of Object.entries(summaries)) {
+        if (content === undefined) {
+          await removeTranscriptArtifact(sessionDir, fileName);
+          removedExports.add(fileName);
+        } else {
+          exportedHashes[fileName] = await writeTranscriptArtifact(sessionDir, fileName, content);
+        }
       }
     }
     this.updateExportManifest(session, exportedHashes, removedExports);

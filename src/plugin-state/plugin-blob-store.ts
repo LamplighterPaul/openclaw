@@ -144,7 +144,8 @@ function prepareBlob(params: {
   const ttlMs = validateTtl(params.opts?.ttlMs, "register") ?? params.defaultTtlMs;
   return {
     key,
-    bytes: Uint8Array.from(params.bytes),
+    // Registration reserves broker capacity before copying, still before its first await.
+    bytes: params.bytes,
     metadataJson,
     ...(ttlMs !== undefined ? { ttlMs } : {}),
   };

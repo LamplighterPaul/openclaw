@@ -5,9 +5,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { PluginBlobStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  OpenBlobStoreOptions,
+  PluginBlobStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginBlobStoreForTests,
+  createPluginBlobKernelStore,
   resetPluginBlobStoreForTests,
   executeSqliteQuerySync,
   getNodeSqliteKysely,
@@ -23,19 +27,28 @@ const execFileAsync = promisify(execFile);
 
 export async function expireDiffArtifactForTest(
   rootDir: string,
-  blobStore: PluginBlobStore<DiffArtifactBlobMetadata>,
   id: string,
   expectedTtlMs: number,
 ): Promise<void> {
-  const entry = await blobStore.lookup(id);
-  assert.ok(entry);
-  assert.equal(entry.expiresAt! - entry.createdAt, expectedTtlMs);
   const { db } = openOpenClawStateDatabase({
     env: { ...process.env, OPENCLAW_STATE_DIR: path.join(path.dirname(rootDir), "state") },
   });
+  const database = getNodeSqliteKysely<OpenClawStateKyselyDatabaseForTests>(db);
+  const entry = executeSqliteQuerySync(
+    db,
+    database
+      .selectFrom("plugin_blob_entries")
+      .select(["created_at", "expires_at"])
+      .where("plugin_id", "=", "diffs")
+      .where("namespace", "=", "diff-artifacts")
+      .where("entry_key", "=", id),
+  ).rows[0];
+  assert.ok(entry);
+  assert.ok(entry.expires_at !== null);
+  assert.equal(entry.expires_at - entry.created_at, expectedTtlMs);
   const result = executeSqliteQuerySync(
     db,
-    getNodeSqliteKysely<OpenClawStateKyselyDatabaseForTests>(db)
+    database
       .updateTable("plugin_blob_entries")
       .set({ expires_at: 1 })
       .where("plugin_id", "=", "diffs")
@@ -88,7 +101,10 @@ export async function createTempDiffRoot(prefix: string): Promise<{
   };
 }
 
-export async function createDiffStoreHarness(prefix: string): Promise<{
+export async function createDiffStoreHarness(
+  prefix: string,
+  options: { nativeKernel?: boolean } = {},
+): Promise<{
   rootDir: string;
   store: DiffArtifactStore;
   blobStore: PluginBlobStore<DiffArtifactBlobMetadata>;
@@ -104,18 +120,17 @@ export async function createDiffStoreHarness(prefix: string): Promise<{
     ...process.env,
     OPENCLAW_STATE_DIR: path.join(harnessRoot, "state"),
   };
+  const storeOptions: OpenBlobStoreOptions = {
+    namespace: "diff-artifacts",
+    maxEntries: 2_048,
+    maxBytesPerEntry: 32 * 1024 * 1024,
+    maxBytesPerNamespace: 256 * 1024 * 1024,
+    overflowPolicy: "reject-new",
+  };
   const openBlobStore = () =>
-    createPluginBlobStoreForTests<DiffArtifactBlobMetadata>(
-      "diffs",
-      {
-        namespace: "diff-artifacts",
-        maxEntries: 2_048,
-        maxBytesPerEntry: 32 * 1024 * 1024,
-        maxBytesPerNamespace: 256 * 1024 * 1024,
-        overflowPolicy: "reject-new",
-      },
-      env,
-    );
+    options.nativeKernel
+      ? createPluginBlobKernelStore<DiffArtifactBlobMetadata>("diffs", { ...storeOptions, env })
+      : createPluginBlobStoreForTests<DiffArtifactBlobMetadata>("diffs", storeOptions, env);
   const blobStore = openBlobStore();
   let store = new DiffArtifactStore({ rootDir, blobStore });
   return {

@@ -2,9 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { OwnedWorkerTask } from "../infra/worker-task-pool.types.js";
 import { PluginBlobStoreError } from "../plugin-state/plugin-blob-store.types.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseAsync } from "./openclaw-state-db-cache.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseByPathAsync,
+} from "./openclaw-state-db-cache.js";
 import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import type {
   OpenClawStateReadPhase,
@@ -15,8 +19,8 @@ import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js
 
 const mock = vi.hoisted(() => ({
   run: vi.fn<() => Promise<OpenClawStateReadReply>>(),
-  close: vi.fn<() => Promise<void>>(),
-  notify: undefined as ((error: unknown) => void) | undefined,
+  close: vi.fn<OwnedWorkerTask<OpenClawStateReadReply>["close"]>(),
+  closePool: vi.fn<() => Promise<void>>(),
 }));
 vi.mock("./openclaw-state-worker-context.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./openclaw-state-worker-context.js")>();
@@ -25,19 +29,21 @@ vi.mock("./openclaw-state-worker-context.js", async (importOriginal) => {
     captureOpenClawStateWorkerContext: vi.fn(actual.captureOpenClawStateWorkerContext),
   };
 });
-vi.mock("../infra/worker-task-pool.js", () => ({
-  WorkerTaskPool: class {
-    constructor(options: { onRetirementFailure?: typeof mock.notify }) {
-      mock.notify = options.onRetirementFailure;
-    }
-    run = mock.run;
-    close = mock.close;
-  },
+vi.mock("../infra/worker-task-pool.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/worker-task-pool.js")>()),
+  createOwnedWorkerTaskPool: () => ({
+    runTask: (): OwnedWorkerTask<OpenClawStateReadReply> => ({
+      result: mock.run(),
+      close: mock.close,
+    }),
+    close: mock.closePool,
+  }),
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
     mock.close.mockResolvedValue();
+    mock.closePool.mockResolvedValue();
     await closeOpenClawStateDatabaseAsync();
     cleanup();
   }),
@@ -49,9 +55,9 @@ const reply: OpenClawStateReadReply = {
   cells: [],
 };
 beforeEach(() => {
-  mock.notify = undefined;
   mock.run.mockReset().mockResolvedValue(reply);
   mock.close.mockReset().mockResolvedValue();
+  mock.closePool.mockReset().mockResolvedValue();
 });
 function source() {
   const root = tempDirs.make("state-read-error-phase-");
@@ -136,16 +142,6 @@ it("maps the full Blob query and cleanup error graph after observing its receipt
   expect(error.cause).toBe(error.errors[0]);
 });
 
-it("keeps a successful source receipt when cleanup rejects", async () => {
-  const cleanup = new Error("successful read cleanup failed");
-  mock.close.mockRejectedValueOnce(cleanup);
-  const { mapped, mapError } = mapper();
-  await expect(
-    executeExistingOpenClawStateRead(source(), { type: "fleet.list" }, { mapError }),
-  ).rejects.toBe(mapped);
-  expect(mapError).toHaveBeenCalledExactlyOnceWith(cleanup, "read");
-});
-
 it("does not infer pre-read admission from an unobserved transport failure", async () => {
   const original = new Error("no authoritative reply");
   mock.run.mockRejectedValue(original);
@@ -156,21 +152,34 @@ it("does not infer pre-read admission from an unobserved transport failure", asy
   expect(mapError).toHaveBeenCalledExactlyOnceWith(original, "unobserved");
 });
 
-it("retains an interrupted successful receipt without publishing its result", async () => {
-  const started = createDeferredCore();
-  const task = createDeferredCore<OpenClawStateReadReply>();
-  mock.run.mockImplementation(() => {
-    started.resolve();
-    return task.promise;
+it("retains a successful receipt through failed task cleanup and canonical retry", async () => {
+  const options = source();
+  const closing = createDeferredCore();
+  const stopped = createDeferredCore();
+  mock.close.mockImplementationOnce(() => {
+    closing.resolve();
+    return stopped.promise;
   });
   const { mapped, mapError } = mapper();
-  const pending = executeExistingOpenClawStateRead(source(), { type: "fleet.list" }, { mapError });
-  const assertion = expect(pending).rejects.toBe(mapped);
-  await started.promise;
-  const retirement = new Error("retirement interrupted publication");
-  mock.notify?.(retirement);
-  task.resolve(reply);
+  const publish = vi.fn();
+  const pending = executeExistingOpenClawStateRead(options, { type: "fleet.list" }, { mapError });
+  const assertion = expect(pending.then(publish)).rejects.toBe(mapped);
+  const cleanup = new Error("successful read cleanup failed");
+  try {
+    await closing.promise;
+    expect(publish).not.toHaveBeenCalled();
+    expect(mapError).not.toHaveBeenCalled();
+    expect(mock.closePool).not.toHaveBeenCalled();
+  } finally {
+    stopped.reject(cleanup);
+  }
   await assertion;
-  expect(mapError).toHaveBeenCalledExactlyOnceWith(retirement, "read");
+  expect(mapError).toHaveBeenCalledExactlyOnceWith(cleanup, "read");
   expect(mock.close).toHaveBeenCalledOnce();
+  await closeOpenClawStateDatabaseByPathAsync(options.path);
+  expect(mock.close).toHaveBeenCalledTimes(2);
+  expect(mock.closePool).not.toHaveBeenCalled();
+  expect(publish).not.toHaveBeenCalled();
+  await expect(pending).rejects.toBe(mapped);
+  expect(mapError).toHaveBeenCalledOnce();
 });
