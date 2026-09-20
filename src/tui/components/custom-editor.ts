@@ -45,6 +45,7 @@ function decodeAltGrPrintable(data: string): string | undefined {
 /** Editor with OpenClaw TUI shortcuts layered on top of pi-tui text editing. */
 export class CustomEditor extends Editor {
   onEscape?: () => void;
+  onCtrlV?: () => void;
   onCtrlC?: () => void;
   onCtrlD?: () => void;
   onCtrlG?: () => void;
@@ -97,6 +98,10 @@ export class CustomEditor extends Editor {
     }
     if (matchesKey(data, Key.escape) && this.onEscape && !this.isShowingAutocomplete()) {
       this.onEscape();
+      return;
+    }
+    if (matchesKey(data, Key.ctrl("v")) && this.onCtrlV) {
+      this.onCtrlV();
       return;
     }
     if (matchesKey(data, Key.ctrl("c")) && this.onCtrlC) {

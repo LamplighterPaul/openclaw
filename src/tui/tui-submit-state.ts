@@ -1,4 +1,5 @@
 import { isChatStopCommandText } from "../gateway/chat-abort.js";
+import type { TuiImageAttachment } from "./tui-backend.js";
 
 export type TuiPendingSubmit =
   | { phase: "sending"; runId: string; draftText: string }
@@ -16,6 +17,8 @@ export type TuiChatSubmitBlock = Exclude<TuiChatSubmitAdmission, { status: "allo
 export type TuiChatSubmitSnapshot = {
   sessionTransition: "new" | "reset" | null;
   sessionTransitionEpoch: number;
+  attachments?: TuiImageAttachment[];
+  clipboardPending?: boolean;
 };
 
 type PendingSubmitState = { pendingSubmit: TuiPendingSubmit | null };

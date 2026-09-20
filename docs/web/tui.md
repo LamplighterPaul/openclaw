@@ -116,6 +116,19 @@ Local mode cannot fulfill store-bound requests. Use `openclaw secrets store`
 or the Control UI with a running Gateway. Enter credentials only in a masked
 prompt, never in the composer.
 
+## Clipboard images
+
+In Gateway mode, press **Ctrl+V** to attach an image from the clipboard on the
+machine running the TUI. A pending indicator appears above the editor. Press
+Enter to send it with your message (or on its own), or Ctrl+C to clear the draft.
+Commands and session changes discard pending images. Use your terminal's normal
+paste shortcut for text.
+
+Linux requires `wl-paste` on Wayland or `xclip` on X11. macOS uses `osascript` and
+Windows uses PowerShell. An SSH-only host cannot read your desktop clipboard;
+run the TUI on your desktop and connect it to the remote Gateway. Local mode does
+not support image attachments. Drafts accept up to four images totaling 6 MiB.
+
 ## Keyboard shortcuts
 
 - Enter: send message

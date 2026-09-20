@@ -18,11 +18,20 @@ import type { ResponseUsageMode, SessionInfo, SessionScope } from "./tui-types.j
 
 // Transport-agnostic backend contract consumed by the TUI runtime.
 /** Options for sending one chat turn through a TUI backend. */
+export type TuiImageAttachment = {
+  type: "image";
+  origin: "paste";
+  mimeType: string;
+  content: string;
+  sizeBytes: number;
+};
+
 export type ChatSendOptions = {
   sessionKey: string;
   agentId?: string;
   sessionId?: string | null;
   message: string;
+  attachments?: TuiImageAttachment[];
   thinking?: string;
   deliver?: boolean;
   timeoutMs?: number;
@@ -197,6 +206,7 @@ export type TuiSessionCreateOptions = {
 
 /** Minimal backend interface shared by Gateway and embedded local TUI modes. */
 export type TuiBackend = {
+  readonly supportsImageAttachments?: boolean;
   connection: {
     url: string;
     token?: string;

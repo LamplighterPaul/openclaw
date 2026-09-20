@@ -177,6 +177,7 @@ type HandoffSessionResolveParams = Required<
 >;
 
 export class GatewayChatClient implements TuiBackend {
+  readonly supportsImageAttachments = true;
   private client: GatewayClient;
   private readonly historyLifetime = new AbortController();
   private readyPromise: Promise<void>;
@@ -334,6 +335,7 @@ export class GatewayChatClient implements TuiBackend {
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
       message: opts.message,
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
       thinking: opts.thinking,
       deliver: opts.deliver,
       timeoutMs: opts.timeoutMs,

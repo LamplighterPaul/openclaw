@@ -48,11 +48,13 @@ import {
   parseAgentSessionKey,
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
+import { readClipboardImage } from "./clipboard-image.js";
 import { getSlashCommands, shouldSubmitExactArgumentCompletion } from "./commands.js";
 import { ChatLog } from "./components/chat-log.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { resolveLocalRunShutdownGraceMs } from "./local-run-shutdown.js";
 import { editorTheme, tuiTheme as theme } from "./theme/theme.js";
+import { createAttachmentDraft } from "./tui-attachment-draft.js";
 import { createTuiAuthChildOwner } from "./tui-auth-child.js";
 import { createTuiAutocompleteProvider } from "./tui-autocomplete.js";
 import type { TuiBackend } from "./tui-backend.js";
@@ -799,6 +801,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   let lastActivityStatus = "idle";
   let invalidateSessionRunOwnership: () => void = () => undefined;
   let notifySessionChanged: () => void = () => undefined;
+  let clearAttachmentDraft: () => void = () => undefined;
   let reconcileReconnectRun: (_outcome: TuiHistoryRunOutcome) => void = () => undefined;
 
   const state: TuiStateAccess & {
@@ -817,6 +820,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       if (this.sessionIdentity.agentId === value) {
         return;
       }
+      clearAttachmentDraft();
       this.sessionIdentity.agentId = value;
       invalidateSessionRunOwnership();
       notifySessionChanged();
@@ -825,6 +829,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       return this.sessionIdentity.sessionKey;
     },
     set currentSessionKey(value: string) {
+      if (this.sessionIdentity.sessionKey !== value) {
+        clearAttachmentDraft();
+      }
       this.sessionIdentity.sessionKey = value;
       notifySessionChanged();
     },
@@ -848,6 +855,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       return this.sessionIdentity.generations.get(generationKey) ?? 0;
     },
     set sessionGeneration(value: number) {
+      if (value > this.sessionGeneration) {
+        clearAttachmentDraft();
+      }
       const generationKey = this.sessionIdentity.generationKey();
       this.sessionIdentity.generations.set(generationKey, Math.max(this.sessionGeneration, value));
     },
@@ -905,6 +915,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   const statusContainer = new Container();
   const footer = new Text("", 1, 0);
   const questionStatus = new Text("", 1, 0);
+  const attachmentStatus = new Text("", 1, 0);
   const loadImage = client.loadImage?.bind(client);
   const chatLog = new ChatLog(
     180,
@@ -936,6 +947,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   root.addChild(statusContainer);
   root.addChild(footer);
   root.addChild(questionStatus);
+  root.addChild(attachmentStatus);
   root.addChild(editor);
 
   const resolveDynamicSlashCommandsKey = () => state.currentAgentId;
@@ -1612,6 +1624,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     authChild.close();
     // Exit owns the input boundary before transport teardown can race a buffered submit.
     disposeSubmitBurst();
+    clearAttachmentDraft();
     connectionGeneration += 1;
     exitResult = {
       exitReason: result?.exitReason ?? "exit",
@@ -1692,10 +1705,43 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     chatLog.addSystem(`${action} submit failed: ${message}`);
     tui.requestRender();
   };
+  const attachmentDraft = createAttachmentDraft({
+    read: readClipboardImage,
+    notice: (message) => {
+      chatLog.addSystem(message);
+      tui.requestRender();
+    },
+    changed: (count, reading) => {
+      attachmentStatus.setText(
+        theme.accent(
+          reading
+            ? "Reading clipboard image…"
+            : count
+              ? `${count} image${count === 1 ? "" : "s"} attached · Ctrl+C to clear`
+              : "",
+        ),
+      );
+      tui.requestRender();
+    },
+  });
   const submitHandler = createEditorSubmitHandler({
     editor,
     handleCommand,
-    sendMessage,
+    sendMessage: (value, attachments) => {
+      const restore = attachmentDraft.captureRestore();
+      return sendMessage(value, undefined, attachments, () => {
+        if (attachments?.length && restore(attachments)) {
+          const newerDraft = editor.getExpandedText();
+          editor.setText(newerDraft ? `${value}\n${newerDraft}` : value);
+        }
+      });
+    },
+    restoreAttachments: attachmentDraft.restore,
+    clearAttachments: attachmentDraft.clear,
+    onClipboardPending: () => {
+      chatLog.addSystem("Clipboard read in progress; press Enter when the image is attached.");
+      tui.requestRender();
+    },
     handleBangLine: localShell.runLocalShellLine,
     onSubmitError: notifySubmitError,
     admitMessage: resolveMessageAdmission,
@@ -1703,13 +1749,25 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   });
   const submitBurst = createSubmitBurstCoalescer({
     submit: submitHandler,
-    captureSnapshot: captureMessageAdmission,
+    captureSnapshot: () => ({ ...captureMessageAdmission(), ...attachmentDraft.capture() }),
     enabled: opts.submitBurstWindowMs !== undefined || shouldEnableWindowsGitBashPasteFallback(),
     burstWindowMs: opts.submitBurstWindowMs,
     onCapture: opts.onSubmitBurstCaptured,
   });
   disposeSubmitBurst = submitBurst.dispose;
   editor.onSubmit = submitBurst;
+  clearAttachmentDraft = () => {
+    attachmentDraft.clear();
+    submitBurst.cancel();
+  };
+  editor.onCtrlV = () => {
+    if (!client.supportsImageAttachments) {
+      chatLog.addSystem("Image attachments require Gateway mode; restart without --local.");
+      tui.requestRender();
+      return;
+    }
+    void attachmentDraft.paste();
+  };
 
   editor.onEscape = () => {
     if (chatLog.hasVisibleBtw()) {
@@ -1722,7 +1780,8 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   const handleCtrlC = () => {
     const now = Date.now();
     const decision = resolveTuiCtrlCAction({
-      hasInput: editor.getText().length > 0,
+      hasInput:
+        editor.getText().length > 0 || attachmentDraft.hasInput() || submitBurst.hasPending(),
       now,
       lastCtrlCAt: state.lastCtrlCAt,
       exitRequested,
@@ -1735,6 +1794,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     }
     state.lastCtrlCAt = decision.nextLastCtrlCAt;
     if (decision.action === "clear") {
+      clearAttachmentDraft();
       editor.setText("");
       chatLog.addSystem("cleared input; press ctrl+c again to exit");
       tui.requestRender();

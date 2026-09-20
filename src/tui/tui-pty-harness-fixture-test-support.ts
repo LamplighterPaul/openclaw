@@ -210,6 +210,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
       ${TUI_PTY_RENDERING_FIXTURE_SCRIPT}
 
       class FixtureBackend implements TuiBackend {
+        readonly supportsImageAttachments = true;
         connection = { url: "pty-fixture://local" };
         onEvent?: TuiBackend["onEvent"];
         onConnected?: TuiBackend["onConnected"];

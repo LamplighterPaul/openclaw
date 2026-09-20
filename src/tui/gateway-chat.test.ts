@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { validateChatSendParams } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 // Covers gateway-backed chat behavior used by the TUI backend.
 
@@ -623,4 +624,30 @@ describe("GatewayChatClient", () => {
     await expect(client.listTaskSuggestions()).resolves.toEqual([]);
     expect(request).not.toHaveBeenCalled();
   });
+});
+
+it("forwards clipboard images through the existing chat.send attachment contract", async () => {
+  const request = vi
+    .spyOn(GatewayClient.prototype, "request")
+    .mockResolvedValue({ runId: "image-send" });
+  try {
+    const client = new GatewayChatClient({ url: "ws://127.0.0.1:18789", token: "test-token" });
+    const attachments = [
+      {
+        type: "image" as const,
+        origin: "paste" as const,
+        mimeType: "image/png",
+        content: "aW1hZ2U=",
+        sizeBytes: 5,
+      },
+    ];
+    await client.sendChat({ sessionKey: "agent:main:main", message: "", attachments });
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({ message: "", attachments }),
+    );
+    expect(validateChatSendParams(request.mock.calls.at(-1)?.[1])).toBe(true);
+  } finally {
+    request.mockRestore();
+  }
 });
