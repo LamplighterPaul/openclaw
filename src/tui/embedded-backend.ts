@@ -333,6 +333,9 @@ export class EmbeddedTuiBackend implements TuiBackend {
   }
 
   async sendChat(opts: ChatSendOptions): Promise<TuiChatSendResult> {
+    if (opts.attachments?.length) {
+      throw new Error("Image attachments require Gateway mode; restart without --local.");
+    }
     await this.ready;
     await this.preparedModelRuntime.waitUntilReady();
     const runId = opts.runId ?? randomUUID();

@@ -33,7 +33,7 @@ import {
   createSearchableSelectList,
   createSettingsList,
 } from "./components/selectors.js";
-import type { TuiBackend, TuiSessionMutationResult } from "./tui-backend.js";
+import type { TuiBackend, TuiSessionMutationResult, TuiImageAttachment } from "./tui-backend.js";
 import { addBlockedChatSubmitNotice } from "./tui-busy-notice.js";
 import { formatTuiErrorMessage } from "./tui-formatters.js";
 import { buildSessionChoices, loadRecentSessions } from "./tui-session-picker.js";
@@ -899,10 +899,16 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     tui.requestRender();
   };
 
-  const sendMessage = async (text: string, timeoutMs = opts.timeoutMs) => {
+  const sendMessage = async (
+    text: string,
+    timeoutMs = opts.timeoutMs,
+    attachments?: TuiImageAttachment[],
+    onRejected?: () => void,
+  ) => {
     const admission = resolveMessageAdmission(text);
     if (admission.status === "blocked") {
       reportBlockedMessageSubmit(text, admission);
+      onRejected?.();
       return;
     }
     const isBtw = isBtwCommand(text);
@@ -928,7 +934,12 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         if (opts.local === true && state.activeChatRunId && !hasPendingSubmit(state)) {
           chatLog.reserveAssistantSlot(state.activeChatRunId);
         }
-        chatLog.addPendingUser(runId, text);
+        chatLog.addPendingUser(
+          runId,
+          attachments?.length
+            ? `${text}${text ? "\n" : ""}[${attachments.length} image${attachments.length === 1 ? "" : "s"} attached]`
+            : text,
+        );
         reduceTuiSessionProjection(state, {
           type: "sendPending",
           message: {
@@ -953,6 +964,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
           : {}),
         sessionId: sendSessionId,
         message: text,
+        ...(attachments?.length ? { attachments } : {}),
         thinking: opts.thinking,
         deliver: deliverDefault,
         timeoutMs,
@@ -1051,6 +1063,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
             return;
           }
           if (terminalAckFailure) {
+            onRejected?.();
             chatLog.addSystem(`send failed: ${TERMINAL_CHAT_SEND_FAILURE_MESSAGE}`);
             setActivityStatus("error");
           } else {
@@ -1097,6 +1110,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         });
         chatLog.dropPendingUser(runId);
       }
+      onRejected?.();
       chatLog.addSystem(`${isBtw ? "btw failed" : "send failed"}: ${formatTuiErrorMessage(err)}`);
       if (!isBtw) {
         setActivityStatus("error");

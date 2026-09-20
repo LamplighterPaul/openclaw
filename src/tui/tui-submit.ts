@@ -1,5 +1,7 @@
 // Handles TUI input submission and command dispatch.
+import { MAX_IMAGE_BYTES } from "@openclaw/media-core/constants";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import type { TuiImageAttachment } from "./tui-backend.js";
 import type {
   TuiChatSubmitAdmission,
   TuiChatSubmitBlock,
@@ -40,10 +42,13 @@ export function createEditorSubmitHandler(params: {
     addToHistory: (value: string) => void;
   };
   handleCommand: (value: string) => Promise<void> | void;
-  sendMessage: (value: string) => Promise<void> | void;
+  sendMessage: (value: string, attachments?: TuiImageAttachment[]) => Promise<void> | void;
   handleBangLine: (value: string) => Promise<void> | void;
   onSubmitError: (action: TuiSubmitAction, error: unknown) => void;
   admitMessage?: (value: string, snapshot?: TuiChatSubmitSnapshot) => TuiChatSubmitAdmission;
+  restoreAttachments?: (attachments: TuiImageAttachment[]) => void;
+  clearAttachments?: () => void;
+  onClipboardPending?: () => void;
   onBlockedMessageSubmit?: (value: string, admission: TuiChatSubmitBlock) => void;
 }) {
   const clearSubmittedEditor = () => {
@@ -67,12 +72,13 @@ export function createEditorSubmitHandler(params: {
     const trimChangesAction = resolveEditorSubmitAction(value) !== action;
 
     // Keep previous behavior: ignore empty/whitespace-only submissions.
-    if (!value) {
+    if (!value && !snapshot?.attachments?.length && !snapshot?.clipboardPending) {
       clearSubmittedEditor();
       return;
     }
 
     if (action !== "message") {
+      params.clearAttachments?.();
       clearSubmittedEditor();
       const command = action === "local shell" ? raw : value;
       const handle = action === "local shell" ? params.handleBangLine : params.handleCommand;
@@ -81,11 +87,36 @@ export function createEditorSubmitHandler(params: {
       return;
     }
 
+    if (snapshot?.clipboardPending) {
+      restoreBlockedEditor(raw);
+      params.restoreAttachments?.(snapshot.attachments ?? []);
+      params.onClipboardPending?.();
+      return;
+    }
+
+    const attachments = snapshot?.attachments ?? [];
+    // Buffered Enter bursts and failed-send restoration can combine separate captures.
+    if (
+      attachments.length > 4 ||
+      attachments.reduce((size, image) => size + image.sizeBytes, 0) > MAX_IMAGE_BYTES
+    ) {
+      restoreBlockedEditor(raw);
+      params.restoreAttachments?.(attachments);
+      params.onSubmitError(
+        "message",
+        new Error(
+          "Draft exceeds four images or 6 MiB total. Clear the draft and attach fewer images.",
+        ),
+      );
+      return;
+    }
+
     const admission: TuiChatSubmitAdmission = (snapshot
       ? params.admitMessage?.(value, snapshot)
       : params.admitMessage?.(value)) ?? { status: "allowed" };
     if (admission.status === "blocked") {
       restoreBlockedEditor(trimChangesAction ? raw : value);
+      params.restoreAttachments?.(snapshot?.attachments ?? []);
       params.onBlockedMessageSubmit?.(value, admission);
       return;
     }
@@ -95,7 +126,14 @@ export function createEditorSubmitHandler(params: {
     if (!trimChangesAction) {
       params.editor.addToHistory(value);
     }
-    runSubmitAction("message", () => params.sendMessage(value), params.onSubmitError);
+    runSubmitAction(
+      "message",
+      () =>
+        snapshot?.attachments?.length
+          ? params.sendMessage(value, snapshot.attachments)
+          : params.sendMessage(value),
+      params.onSubmitError,
+    );
   };
 }
 
@@ -209,7 +247,28 @@ export function createSubmitBurstCoalescer(params: {
     if (ts - pendingAt <= windowMs) {
       pending = {
         value: `${pending.value}\n${value}`,
-        ...(pending.snapshot || snapshot ? { snapshot: pending.snapshot ?? snapshot } : {}),
+        ...(pending.snapshot || snapshot
+          ? {
+              snapshot: {
+                ...(pending.snapshot ?? snapshot!),
+                ...(pending.snapshot?.attachments || snapshot?.attachments
+                  ? {
+                      attachments: [
+                        ...(pending.snapshot?.attachments ?? []),
+                        ...(snapshot?.attachments ?? []),
+                      ],
+                    }
+                  : {}),
+                ...(pending.snapshot?.clipboardPending !== undefined ||
+                snapshot?.clipboardPending !== undefined
+                  ? {
+                      clipboardPending:
+                        pending.snapshot?.clipboardPending || snapshot?.clipboardPending,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
       };
       pendingAt = ts;
       scheduleFlush();
@@ -221,11 +280,14 @@ export function createSubmitBurstCoalescer(params: {
     scheduleFlush();
   };
 
-  const dispose = () => {
-    disposed = true;
+  const cancel = () => {
     pending = null;
     clearFlushTimer();
   };
 
-  return Object.assign(submitBurst, { dispose });
+  const dispose = () => {
+    cancel();
+    disposed = true;
+  };
+  return Object.assign(submitBurst, { dispose, cancel, hasPending: () => pending !== null });
 }
