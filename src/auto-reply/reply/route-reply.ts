@@ -31,13 +31,15 @@ import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   type ReplyDeliveryContext,
-  formatBtwTextForExternalDelivery,
-  shouldSuppressReasoningPayload,
 } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import { normalizeReplyPayloadOutcome } from "./normalize-reply.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
+import {
+  formatBtwTextForExternalDelivery,
+  shouldSuppressReasoningPayload,
+} from "./reply-payloads.js";
 import type { ResponsePrefixContext } from "./response-prefix-template.js";
 
 const messageRuntimeLoader = createLazyImportLoader(
