@@ -1,6 +1,6 @@
 import { html, nothing } from "lit";
 import type { ChatAccountSelection } from "../../../../../packages/gateway-protocol/src/index.ts";
-import { resolveModelRuntimeRoute } from "../../../../../src/shared/agent-runtime-display.js";
+import { resolveModelRuntimeRoute } from "../../../../../src/shared/model-runtime-route.js";
 import type {
   ModelAuthStatusResult,
   ModelCatalogEntry,

@@ -52,7 +52,7 @@ import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveProviderChannelLoginChoice } from "../../plugins/provider-login-options.js";
-import { resolveModelRuntimeRoute } from "../../shared/agent-runtime-display.js";
+import { resolveModelRuntimeRoute } from "../../shared/model-runtime-route.js";
 import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
 import type { ReplyPayload } from "../types.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";

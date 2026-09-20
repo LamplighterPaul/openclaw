@@ -1,7 +1,7 @@
 import { html, nothing } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { repeat } from "lit/directives/repeat.js";
-import { resolveModelRuntimeRoute } from "../../../../../src/shared/agent-runtime-display.js";
+import { resolveModelRuntimeRoute } from "../../../../../src/shared/model-runtime-route.js";
 import { icons } from "../../../components/icons.ts";
 import "../../../components/tooltip.ts";
 import {

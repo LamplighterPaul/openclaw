@@ -1,5 +1,5 @@
 import type { ModelAuthAvailabilityEvaluation } from "../../agents/model-auth-availability.js";
-import { resolveModelRuntimeRoute } from "../../shared/agent-runtime-display.js";
+import { resolveModelRuntimeRoute } from "../../shared/model-runtime-route.js";
 import { formatProviderLoginCommand } from "../../shared/provider-login-command.js";
 
 const CUSTOM_MODEL_SETUP_GUIDANCE =
