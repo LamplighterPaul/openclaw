@@ -109,12 +109,12 @@ describe("taskflow survivor evidence", () => {
     }));
     expect(() => assertTaskflowIdentifiers(rows, fixture)).not.toThrow();
     for (const [index, field, value] of [
-      [0, "run_id", ` ${rows[0].run_id} `],
-      [1, "child_session_key", `\t${rows[1].child_session_key}\n`],
+      [0, "run_id", ` ${rows[0]!.run_id} `],
+      [1, "child_session_key", `\t${rows[1]!.child_session_key}\n`],
       [2, "child_session_key", " "],
     ] as const) {
       const retained = structuredClone(rows);
-      retained[index][field] = value;
+      retained[index]![field] = value;
       expect(() => assertTaskflowIdentifiers(retained, fixture)).toThrow(
         "Task identifiers must be canonical",
       );

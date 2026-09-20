@@ -193,7 +193,7 @@ async function readTaskIdentifiers() {
     return db
       .prepare("SELECT task_id, run_id, child_session_key FROM task_runs ORDER BY task_id")
       .all()
-      .map((row) => ({ ...row }));
+      .map(({ task_id, run_id, child_session_key }) => ({ task_id, run_id, child_session_key }));
   } finally {
     db.close();
   }

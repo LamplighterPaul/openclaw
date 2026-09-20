@@ -11,16 +11,16 @@ export function normalizeLegacySqliteInteger(value: SQLInputValue): SQLInputValu
   return typeof value === "bigint" ? Number(value) : value;
 }
 
-export function listSqliteColumns(db: DatabaseSync, table: string): Set<string> {
+function listSqliteColumns(db: DatabaseSync, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
   return new Set(rows.flatMap((row) => (row.name ? [row.name] : [])));
 }
 
-export function pickLegacyColumn(columns: Set<string>, name: string, fallbackSql = "NULL"): string {
+function pickLegacyColumn(columns: Set<string>, name: string, fallbackSql = "NULL"): string {
   return columns.has(name) ? name : `${fallbackSql} AS ${name}`;
 }
 
-export function legacyBindValue(value: unknown): SQLInputValue {
+function legacyBindValue(value: unknown): SQLInputValue {
   if (
     value == null ||
     typeof value === "string" ||

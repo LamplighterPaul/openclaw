@@ -53,9 +53,6 @@ export function repairLegacyTaskIdentifiers(db: DatabaseSync): void {
       runs.set(key, task);
     }
     if (tableExists(db, "subagent_runs")) {
-      const update = db.prepare(
-        "UPDATE subagent_runs SET child_session_key = ?, payload_json = ? WHERE run_id = ?",
-      );
       for (const row of iterateSqliteQuerySync(
         db,
         queries.selectFrom("subagent_runs").select(["run_id", "child_session_key", "payload_json"]),
@@ -90,7 +87,7 @@ export function repairLegacyTaskIdentifiers(db: DatabaseSync): void {
             `Cannot normalize task run identifier for subagent ${JSON.stringify(row.run_id)}: normalization would change its existing task binding. Resolve the conflicting bindings before retrying Doctor; no rows were changed.`,
           );
         }
-        const changeRun = Boolean(task?.run_id === previousRunId && taskRunId !== previousRunId);
+        const changeRun = task?.run_id === previousRunId && taskRunId !== previousRunId;
         if (!changeRun && !changeChild) {
           continue;
         }
@@ -108,17 +105,25 @@ export function repairLegacyTaskIdentifiers(db: DatabaseSync): void {
             payload.delivery.payload.childSessionKey = nextChildKey;
           }
         }
-        update.run(nextChildKey, JSON.stringify(stored), row.run_id);
+        executeSqliteQuerySync(
+          db,
+          queries
+            .updateTable("subagent_runs")
+            .set({ child_session_key: nextChildKey, payload_json: JSON.stringify(stored) })
+            .where("run_id", "=", row.run_id),
+        );
       }
     }
-    const update = db.prepare(
-      "UPDATE task_runs SET run_id = ?, child_session_key = ? WHERE task_id = ?",
-    );
     for (const task of changed) {
-      update.run(
-        normalizeOptionalString(task.run_id) ?? null,
-        normalizeOptionalString(task.child_session_key) ?? null,
-        task.task_id,
+      executeSqliteQuerySync(
+        db,
+        queries
+          .updateTable("task_runs")
+          .set({
+            run_id: normalizeOptionalString(task.run_id) ?? null,
+            child_session_key: normalizeOptionalString(task.child_session_key) ?? null,
+          })
+          .where("task_id", "=", task.task_id),
       );
     }
   });

@@ -18,6 +18,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchemaIfNeeded,
+  type OpenClawStateDatabase,
 } from "./openclaw-state-db.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 
@@ -36,11 +37,12 @@ function seedTask(db: DatabaseSync, taskId: string, runId: string, childSessionK
   ).run(taskId);
 }
 
-function seedRun(db: DatabaseSync, privateCompletion: boolean) {
+function seedRun(database: OpenClawStateDatabase, privateCompletion: boolean) {
   const run: SubagentRunRecord = {
     runId: " \trun-one\n",
     childSessionKey: "\u00a0agent:main:subagent:one\u00a0",
     requesterSessionKey: "agent:main:main",
+    requesterDisplayKey: "main",
     task: "Preserve completion ownership",
     cleanup: "keep",
     createdAt: 100,
@@ -49,7 +51,7 @@ function seedRun(db: DatabaseSync, privateCompletion: boolean) {
     delivery: { status: "pending", attemptCount: 2, lastError: "retry later" },
     ...(privateCompletion ? { completionTarget: "parent" as const } : {}),
   };
-  upsertSubagentRunRowInDatabase({ db, path: ":memory:" }, bindSubagentRunRecord(run));
+  upsertSubagentRunRowInDatabase(database, bindSubagentRunRecord(run));
   return run;
 }
 
@@ -66,7 +68,7 @@ it.each([false, true])(
   async (privateCompletion) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const database = openOpenClawStateDatabase({ env: state.env });
-      const run = seedRun(database.db, privateCompletion);
+      const run = seedRun(database, privateCompletion);
       seedTask(database.db, "task-one", run.runId, run.childSessionKey);
       seedTask(database.db, "task-duplicate", run.runId, run.childSessionKey);
       seedTask(database.db, "task-empty", " \t\n", "\u00a0");
@@ -86,27 +88,27 @@ it.each([false, true])(
         requiredness: "required",
       });
       expect((await doctor.run()).warnings).toEqual([]);
-      const repaired = new DatabaseSync(pathname);
+      const repaired = openOpenClawStateDatabase({ env: state.env });
       try {
-        const task = readTaskRecord(repaired, "task-one");
+        const task = readTaskRecord(repaired.db, "task-one");
         expect(task).toMatchObject({
           runId: "run-one",
           childSessionKey: "agent:main:subagent:one",
         });
-        expect(readTaskRecord(repaired, "task-duplicate")).toMatchObject({
+        expect(readTaskRecord(repaired.db, "task-duplicate")).toMatchObject({
           runId: task?.runId,
           childSessionKey: task?.childSessionKey,
         });
-        expect(readTaskRecord(repaired, "task-empty")?.runId).toBeUndefined();
-        expect(readTaskRecord(repaired, "task-empty")?.childSessionKey).toBeUndefined();
-        expect(readSubagentRun({ db: repaired, path: pathname }, run.runId)).toEqual({
+        expect(readTaskRecord(repaired.db, "task-empty")?.runId).toBeUndefined();
+        expect(readTaskRecord(repaired.db, "task-empty")?.childSessionKey).toBeUndefined();
+        expect(readSubagentRun(repaired, run.runId)).toEqual({
           ...run,
           taskRunId: "run-one",
           childSessionKey: "agent:main:subagent:one",
         });
-        expect(snapshot(repaired).delivery).toEqual(before.delivery);
-        const after = snapshot(repaired);
-        repaired.close();
+        expect(snapshot(repaired.db).delivery).toEqual(before.delivery);
+        const after = snapshot(repaired.db);
+        closeOpenClawStateDatabaseForTest();
         expect((await doctor.run()).warnings).toEqual([]);
         const repeated = new DatabaseSync(pathname);
         try {
@@ -115,7 +117,7 @@ it.each([false, true])(
           repeated.close();
         }
       } finally {
-        if (repaired.isOpen) repaired.close();
+        closeOpenClawStateDatabaseForTest();
       }
     });
   },
@@ -126,7 +128,7 @@ it.each(["task", "completion", "padded completion"])(
   async (conflict) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const database = openOpenClawStateDatabase({ env: state.env });
-      const run = seedRun(database.db, false);
+      const run = seedRun(database, false);
       seedTask(database.db, "task-one", run.runId, run.childSessionKey);
       if (conflict === "task") {
         seedTask(database.db, "task-conflict", "run-one", "agent:main:subagent:other");
@@ -174,9 +176,8 @@ it.each(["task", "completion", "padded completion"])(
 it("repairs a child key without attaching an unrelated physical run to an unchanged task run ID", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const database = openOpenClawStateDatabase({ env: state.env });
-    const run = seedRun(database.db, false);
+    const run = seedRun(database, false);
     seedTask(database.db, "task-one", "run-one", run.childSessionKey);
-    const pathname = database.path;
     closeOpenClawStateDatabaseForTest();
     const result = await createStateSchemaMigrationStep({
       stateDir: state.stateDir,
@@ -185,17 +186,17 @@ it("repairs a child key without attaching an unrelated physical run to an unchan
       requiredness: "required",
     }).run();
     expect(result.warnings).toEqual([]);
-    const repaired = new DatabaseSync(pathname);
+    const repaired = openOpenClawStateDatabase({ env: state.env });
     try {
-      const restored = readSubagentRun({ db: repaired, path: pathname }, run.runId);
+      const restored = readSubagentRun(repaired, run.runId);
       expect(restored?.runId).toBe(run.runId);
       expect(restored?.taskRunId).toBeUndefined();
-      expect(readTaskRecord(repaired, "task-one")).toMatchObject({
+      expect(readTaskRecord(repaired.db, "task-one")).toMatchObject({
         runId: "run-one",
         childSessionKey: "agent:main:subagent:one",
       });
     } finally {
-      repaired.close();
+      closeOpenClawStateDatabaseForTest();
     }
   });
 });
