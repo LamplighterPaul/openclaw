@@ -47,6 +47,7 @@ export function registerLaunchdAncestryTests({
       "allows external %s with stale OpenClaw service markers",
       async (action) => {
         const env = createDefaultLaunchdEnv();
+        getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 1]));
         state.files.set(
           resolveLaunchAgentPlistPath(env),
           createTestLaunchAgentPlist({

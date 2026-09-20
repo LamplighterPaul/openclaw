@@ -61,7 +61,13 @@ export async function isCurrentProcessInsideLaunchdService(
   // Preserve the in-service guard when launchd cannot supply authoritative facts.
   const probe = await probeLaunchAgentState(`${resolveLaunchAgentGuiDomain()}/${label}`);
   if (probe.state === "running" && probe.runtime.pid !== undefined) {
-    return getSelfAndAncestorPidsSync().has(probe.runtime.pid);
+    const ancestors = getSelfAndAncestorPidsSync();
+    // The ancestor walk is best-effort. Only reaching launchd (PID 1) proves
+    // an external shell; a failed ps hop must not disable the in-service guard.
+    return (
+      ancestors.has(probe.runtime.pid) ||
+      (hasOpenClawServiceMarker(label, env) && !ancestors.has(1))
+    );
   }
   return (
     (probe.state === "unknown" || probe.state === "running") && hasOpenClawServiceMarker(label, env)
