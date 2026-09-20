@@ -8,6 +8,7 @@ import type {
 import { UpdateFinalizationLifecycle } from "../cli/update-cli/update-finalization-lifecycle.js";
 import type { GatewayService, readGatewayServiceState } from "../daemon/service.js";
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
+import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import {
   collectUpdateDoctorFailureFacts,
   consumeUpdatePostInstallDoctorResult,
@@ -22,10 +23,18 @@ import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveCommandProcessSignal, retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { OpenClawAgentDatabaseLeaseActiveError } from "../state/openclaw-agent-db-lease.js";
+import {
+  OpenClawAgentDatabaseLeaseActiveError,
+  type readActiveOpenClawAgentDatabaseLeasesReadOnly,
+} from "../state/openclaw-agent-db-lease.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 
 const boundary = vi.hoisted(() => ({
+  external: vi.fn(),
+  readLeases: vi.fn<typeof readActiveOpenClawAgentDatabaseLeasesReadOnly>(),
+  gatewayAcquire: vi.fn(),
+  stateAcquire: vi.fn(),
+  schemas: vi.fn(),
   lease: vi.fn(),
   step: vi.fn<typeof recordUpdateRunStep>(),
   finish: vi.fn<typeof finishUpdateRun>(),
@@ -64,7 +73,7 @@ vi.mock("../config/config.js", () => ({
 }));
 vi.mock("./doctor-service-repair-policy.js", () => ({
   shouldManageGatewayService: async () => true,
-  isServiceRepairExternallyManaged: () => false,
+  isServiceRepairExternallyManaged: boundary.external,
   resolveUpdateParentGatewayActivation: () => undefined,
 }));
 vi.mock("./doctor-update-refusal.js", () => ({
@@ -84,11 +93,14 @@ vi.mock("../infra/update-run-ledger.js", () => ({
 }));
 vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/state-database-coordinator.js")>()),
-  acquireGatewayMaintenanceCoordinator: () => ({
-    release: boundary.release,
-    createSchemaFenceDelegate: vi.fn(),
-  }),
-  acquireStateDatabaseCoordinator: () => ({ release: boundary.release }),
+  acquireGatewayMaintenanceCoordinator: () => {
+    boundary.gatewayAcquire();
+    return { release: boundary.release, createSchemaFenceDelegate: vi.fn() };
+  },
+  acquireStateDatabaseCoordinator: () => {
+    boundary.stateAcquire();
+    return { release: boundary.release };
+  },
 }));
 vi.mock("../state/openclaw-state-db-async-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-state-db-async-lifecycle.js")>()),
@@ -100,9 +112,10 @@ vi.mock("../state/openclaw-state-db-async-lifecycle.js", async (importOriginal) 
 vi.mock("../state/openclaw-agent-db-lease.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-agent-db-lease.js")>()),
   assertNoOpenClawAgentDatabaseLeasesReadOnly: boundary.lease,
+  readActiveOpenClawAgentDatabaseLeasesReadOnly: boundary.readLeases,
 }));
 vi.mock("../state/openclaw-database-preflight.js", () => ({
-  preflightOpenClawDatabaseSchemas: async () => ({ indeterminate: [] }),
+  preflightOpenClawDatabaseSchemas: boundary.schemas,
 }));
 vi.mock("../cli/update-cli/update-command-service-maintenance.js", () => ({
   maybeStopManagedServiceBeforeMutableUpdate: boundary.stop,
@@ -133,6 +146,9 @@ const root = "/synthetic/doctor-install";
 let stopped: PreManagedServiceStop;
 beforeEach(() => {
   vi.resetAllMocks();
+  boundary.external.mockReturnValue(false);
+  boundary.readLeases.mockReturnValue([]);
+  boundary.schemas.mockResolvedValue({ indeterminate: [] });
   vi.stubEnv("OPENCLAW_STATE_DIR", "/synthetic/doctor-state");
   vi.stubEnv("OPENCLAW_CONFIG_PATH", "/synthetic/doctor-state/openclaw.json");
   vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", undefined);
@@ -365,6 +381,156 @@ const leaseCode = "agent-database-lease-active";
 const privateCause =
   "private-lease-class /synthetic/private-state/private.db token=fixture-only-token alice@example.invalid";
 
+it("refuses an external active agent lease before serving-Gateway coordinator contention", async () => {
+  boundary.external.mockReturnValue(true);
+  boundary.readLeases.mockReturnValue([
+    {
+      agent_id: "private-agent",
+      lease_id: "private-lease",
+      owner_pid: 4242,
+      owner_start_time: 123,
+      path: "/synthetic/private-state/private.db",
+    },
+  ]);
+  boundary.gatewayAcquire.mockImplementation(() => {
+    throw new Error("another OpenClaw process owns gateway-lifecycle");
+  });
+  const refusal: unknown = await begin().catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(UpdateDoctorError);
+  expect(refusal).toMatchObject({ message: leaseGuidance });
+  const facts = collectUpdateDoctorFailureFacts(refusal);
+  expect(facts).toEqual([{ check: "doctor", code: leaseCode, message: leaseGuidance }]);
+  expect(await projectPublicUpdateFailureIdentifiers(facts[0]!)).toEqual({
+    check: "doctor",
+    code: leaseCode,
+  });
+  expect(JSON.stringify(facts)).not.toContain("private");
+  expect(boundary.readLeases).toHaveBeenCalledOnce();
+  expect(boundary.gatewayAcquire).not.toHaveBeenCalled();
+  expect(boundary.stateAcquire).not.toHaveBeenCalled();
+  expect(boundary.lease).not.toHaveBeenCalled();
+  expect(boundary.stop).not.toHaveBeenCalled();
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.release).not.toHaveBeenCalled();
+});
+
+it("does not use an empty external lease observation to bypass coordinator contention", async () => {
+  boundary.external.mockReturnValue(true);
+  const contention = new Error("another OpenClaw process owns gateway-lifecycle");
+  boundary.gatewayAcquire.mockImplementation(() => {
+    throw contention;
+  });
+  const refusal: unknown = await begin().catch((error: unknown) => error);
+  expect(refusal).toMatchObject({ cause: contention });
+  expect(collectUpdateDoctorFailureFacts(refusal)).toEqual([]);
+  expect(boundary.readLeases).toHaveBeenCalledOnce();
+  expect(boundary.gatewayAcquire).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire).not.toHaveBeenCalled();
+  expect(boundary.lease).not.toHaveBeenCalled();
+  expect(boundary.stop).not.toHaveBeenCalled();
+  expect(boundary.close).not.toHaveBeenCalled();
+});
+
+it("rechecks external leases under both coordinators after an empty observation", async () => {
+  boundary.external.mockReturnValue(true);
+  boundary.lease.mockImplementation(() => {
+    throw new OpenClawAgentDatabaseLeaseActiveError(privateCause);
+  });
+  const refusal: unknown = await begin().catch((error: unknown) => error);
+  expect(collectUpdateDoctorFailureFacts(refusal)).toEqual([
+    { check: "doctor", code: leaseCode, message: leaseGuidance },
+  ]);
+  expect(boundary.readLeases).toHaveBeenCalledOnce();
+  expect(boundary.gatewayAcquire).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire).toHaveBeenCalledOnce();
+  expect(boundary.readLeases.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.gatewayAcquire.mock.invocationCallOrder[0]!,
+  );
+  expect(boundary.stateAcquire.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.lease.mock.invocationCallOrder[0]!,
+  );
+  expect(boundary.release).toHaveBeenCalledTimes(2);
+  expect(boundary.stop).not.toHaveBeenCalled();
+  expect(boundary.close).not.toHaveBeenCalled();
+});
+
+it("fails closed on an unknown external lease observation without exposing private details", async () => {
+  boundary.external.mockReturnValue(true);
+  const cause = Object.assign(new Error(privateCause), {
+    name: "OpenClawAgentDatabaseLeaseActiveError",
+    code: leaseCode,
+  });
+  boundary.readLeases.mockImplementation(() => {
+    throw cause;
+  });
+  boundary.lease.mockImplementation(() => {
+    throw cause;
+  });
+  const refusal: unknown = await begin().catch((error: unknown) => error);
+  expect(refusal).toMatchObject({ cause });
+  expect(refusal).not.toBeInstanceOf(UpdateDoctorError);
+  expect(collectUpdateDoctorFailureFacts(refusal)).toEqual([]);
+  expect(
+    redactPublicSupportDiagnosticLine(String(refusal), {
+      env: {},
+      stateDir: "/synthetic/private-state",
+    }),
+  ).toBe("Error: Doctor could not enter maintenance.");
+  expect(boundary.gatewayAcquire).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire).toHaveBeenCalledOnce();
+  expect(boundary.lease).toHaveBeenCalledOnce();
+  expect(boundary.release).toHaveBeenCalledTimes(2);
+  expect(boundary.stop).not.toHaveBeenCalled();
+  expect(boundary.close).not.toHaveBeenCalled();
+});
+
+it("grants external maintenance only after the unchanged held-owner checks", async () => {
+  boundary.external.mockReturnValue(true);
+  const maintenance = await begin();
+  expect(maintenance).toBeDefined();
+  expect(boundary.readLeases).toHaveBeenCalledOnce();
+  expect(boundary.gatewayAcquire).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire).toHaveBeenCalledOnce();
+  expect(boundary.lease).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire.mock.invocationCallOrder[0]!).toBeLessThan(
+    boundary.lease.mock.invocationCallOrder[0]!,
+  );
+  expect(boundary.stop).not.toHaveBeenCalled();
+  await maintenance!.release();
+  expect(boundary.close).toHaveBeenCalledOnce();
+  expect(boundary.release).toHaveBeenCalledTimes(2);
+});
+
+it("preserves held-owner unreadable-state guidance after an external diagnostic read fails", async () => {
+  boundary.external.mockReturnValue(true);
+  const failure = new Error("synthetic unreadable schema");
+  boundary.readLeases.mockImplementation(() => {
+    throw failure;
+  });
+  boundary.lease.mockImplementation(() => {
+    throw failure;
+  });
+  boundary.schemas.mockResolvedValue({
+    indeterminate: [
+      {
+        kind: "state",
+        path: "/synthetic/doctor-state/state/openclaw.sqlite",
+        reason: "not a database",
+      },
+    ],
+  });
+  const refusal: unknown = await begin().catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(DoctorUnreadableStateDatabaseError);
+  expect(String(refusal)).toContain("restore this file from a verified backup");
+  expect(boundary.gatewayAcquire).toHaveBeenCalledOnce();
+  expect(boundary.stateAcquire).toHaveBeenCalledOnce();
+  expect(boundary.lease).toHaveBeenCalledOnce();
+  expect(boundary.release).toHaveBeenCalledTimes(2);
+  expect(boundary.close).not.toHaveBeenCalled();
+  expect(boundary.stop).not.toHaveBeenCalled();
+});
+
 it("carries an actual typed lease refusal through Doctor IPC, finalization and public projection", async () => {
   const cause = new OpenClawAgentDatabaseLeaseActiveError(privateCause);
   boundary.lease.mockImplementation(() => {
@@ -373,6 +539,7 @@ it("carries an actual typed lease refusal through Doctor IPC, finalization and p
   const refusal: unknown = await begin().catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(UpdateDoctorError);
   expect(refusal).toMatchObject({ cause, message: leaseGuidance });
+  expect(boundary.readLeases).not.toHaveBeenCalled();
   expect(boundary.close).not.toHaveBeenCalled();
   expect(boundary.release).toHaveBeenCalledTimes(2);
   expect(boundary.resume).toHaveBeenCalledOnce();

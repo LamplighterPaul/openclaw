@@ -86,6 +86,21 @@ function assertDoctorMaintenanceInspection(
   );
 }
 
+function createDoctorAgentLeaseRefusal(env: NodeJS.ProcessEnv, cause?: unknown): UpdateDoctorError {
+  const message =
+    "Doctor could not enter maintenance. An agent database is in use. Stop other OpenClaw processes using this state, then retry the update.";
+  return new UpdateDoctorError(
+    message,
+    [
+      createUpdateFailureFact(
+        { check: "doctor", code: "agent-database-lease-active", message },
+        env,
+      ),
+    ],
+    { cause },
+  );
+}
+
 export async function beginDoctorMaintenance(params: {
   options: DoctorOptions;
   root: string | null;
@@ -356,10 +371,36 @@ export async function beginDoctorMaintenance(params: {
   };
   try {
     await settle(async () => {
+      const externallyManaged = isServiceRepairExternallyManaged();
+      if (externallyManaged) {
+        // An external parent may leave the serving Gateway running. Diagnose an
+        // active agent lease before that Gateway's lifecycle lock masks it.
+        // This negative-only observation grants no maintenance authority: both
+        // coordinators and the held-owner lease assertion remain mandatory.
+        const { readActiveOpenClawAgentDatabaseLeasesReadOnly } =
+          await import("../state/openclaw-agent-db-lease.js");
+        let activeAgentLease = false;
+        try {
+          activeAgentLease =
+            readActiveOpenClawAgentDatabaseLeasesReadOnly(
+              { env },
+              openDoctorStateSchemaReadAdmission,
+            ).length > 0;
+        } catch (error) {
+          if (hasCommandProcessCleanupError(error)) {
+            throw error;
+          }
+          // Diagnostic failure is not admission. The mandatory held-owner
+          // check below still classifies unreadable state and unknown errors.
+        }
+        if (activeAgentLease) {
+          throw createDoctorAgentLeaseRefusal(env);
+        }
+      }
       if (
         params.root &&
         isDefaultInstallIdentity(env) &&
-        !isServiceRepairExternallyManaged() &&
+        !externallyManaged &&
         (await shouldManageGatewayService(env))
       ) {
         serviceMaintenance =
@@ -520,18 +561,7 @@ export async function beginDoctorMaintenance(params: {
         assertNoOpenClawAgentDatabaseLeasesReadOnly({ env }, openDoctorStateSchemaReadAdmission);
       } catch (error) {
         if (error instanceof OpenClawAgentDatabaseLeaseActiveError) {
-          const message =
-            "Doctor could not enter maintenance. An agent database is in use. Stop other OpenClaw processes using this state, then retry the update.";
-          throw new UpdateDoctorError(
-            message,
-            [
-              createUpdateFailureFact(
-                { check: "doctor", code: "agent-database-lease-active", message },
-                env,
-              ),
-            ],
-            { cause: error },
-          );
+          throw createDoctorAgentLeaseRefusal(env, error);
         }
         // Classify unreadable state under the held owners without opening a writer.
         const { preflightOpenClawDatabaseSchemas } =
