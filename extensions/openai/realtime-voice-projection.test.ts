@@ -65,6 +65,18 @@ describe("OpenAI realtime public projection", () => {
     },
   );
 
+  it.each(["gpt-live-1", "gpt-live-1-codex"])(
+    "preserves native Talk for forced agent consult with %s",
+    (model) => {
+      const config = { model, consultRouting: "force-agent-consult" };
+
+      expect(projectRealtimeVoicePublicProjection({ providerConfig: { model }, config })).toEqual({
+        config,
+        clientHints: { gatewayRelaySupported: false },
+      });
+    },
+  );
+
   it.each([false, true])(
     "advertises the subscription relay capability independently of OAuth readiness=%s",
     (hasOAuth) => {

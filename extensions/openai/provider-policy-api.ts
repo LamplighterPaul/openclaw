@@ -149,7 +149,11 @@ export function projectRealtimeVoicePublicProjection(ctx: {
   if (isSupportedOpenAIGptLiveModel(modelId)) {
     // Advertise model/transport support, not credential readiness. Session creation
     // still resolves the selected agent's auth and validates the relay launch.
-    return { config: ctx.config, clientHints: { gatewayRelaySupported: true } };
+    return {
+      config: ctx.config,
+      // GPT-Live owns delegation; forced agent consult requires native Talk.
+      clientHints: { gatewayRelaySupported: ctx.config.consultRouting !== "force-agent-consult" },
+    };
   }
   const { model: _model, ...publicConfig } = ctx.config;
   return {

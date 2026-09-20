@@ -154,6 +154,33 @@
         }
       },
       "realtime": true
+    },
+    {
+      "id": "subscription-force-agent-consult",
+      "source": {
+        "talk": {
+          "realtime": {
+            "provider": "openai",
+            "model": "gpt-live-1-codex",
+            "consultRouting": "force-agent-consult"
+          }
+        }
+      },
+      "config": {
+        "talk": {
+          "realtime": {
+            "provider": "openai",
+            "model": "gpt-live-1-codex",
+            "consultRouting": "force-agent-consult"
+          }
+        },
+        "clientHints": {
+          "realtime": {
+            "gatewayRelaySupported": false
+          }
+        }
+      },
+      "realtime": false
     }
   ]
 }
