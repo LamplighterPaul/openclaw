@@ -681,6 +681,9 @@ export async function startTranscripts(params: {
     entry.summaryUpdates.start();
     return { status: "active" as const, session, providerId: provider.id };
   } catch (error) {
+    const cleanupWasPending = entry.cleanupPending;
+    // Fence new speech before waiting for already accepted capture work.
+    entry.cleanupPending = true;
     let failure = error;
     let settlementFailed = false;
     try {
@@ -695,10 +698,9 @@ export async function startTranscripts(params: {
     try {
       if (
         entry.phase === "starting" &&
-        !entry.cleanupPending &&
+        !cleanupWasPending &&
         activeSessions.get(session.sessionId) === entry
       ) {
-        entry.cleanupPending = true;
         const cleanupError = await stopTranscriptProviderCapture({
           ctx: params.ctx,
           entry,

@@ -73,6 +73,118 @@ describe("transcript capture accepted append drainage", () => {
     expect(await f.store.readUtterancesForSession(request.session)).toHaveLength(2);
   });
 
+  it("fences new speech before draining failed post-start setup and retains cleanup retry", async () => {
+    const f = fixture();
+    const started = createDeferred<TranscriptStartRequest>();
+    const firstEntered = createDeferred();
+    const releaseFirst = createDeferred();
+    const releaseLate = createDeferred();
+    const titleFailed = createDeferred();
+    const stopAttempted = createDeferred();
+    const append = f.store.appendUtteranceForSession.bind(f.store);
+    vi.spyOn(f.store, "appendUtteranceForSession").mockImplementation(async (...args) => {
+      if (args[1].text === "Accepted before title failure") {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+      } else {
+        await releaseLate.promise;
+      }
+      await append(...args);
+    });
+    const writeSession = f.store.writeSession.bind(f.store);
+    vi.spyOn(f.store, "writeSession").mockImplementation(async (...args) => {
+      if (args[0].title === "Provider title" && !args[0].stoppedAt) {
+        titleFailed.resolve();
+        throw new Error("Title write unavailable");
+      }
+      await writeSession(...args);
+    });
+    let first: Promise<void> | undefined;
+    let late: Promise<void> | undefined;
+    f.provider.start = async (request) => {
+      started.resolve(request);
+      first = Promise.resolve(request.onUtterance({ text: "Accepted before title failure" }));
+      void first.catch(() => undefined);
+      return { ok: true, session: { ...request.session, title: "Provider title" } };
+    };
+    let cleanupSucceeds = false;
+    let stopCalls = 0;
+    f.provider.stop = async ({ sessionId }) => {
+      stopCalls++;
+      stopAttempted.resolve();
+      return cleanupSucceeds
+        ? { ok: true, sessionId }
+        : { ok: false, error: "Provider cleanup unavailable" };
+    };
+    let startupSettled = false;
+    let lateSettled = false;
+    const startup = f.start({ ...room, sessionId: "failed-title-drain" }).then(
+      () => {
+        startupSettled = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        startupSettled = true;
+        return error;
+      },
+    );
+    const request = await started.promise;
+    try {
+      await Promise.all([firstEntered.promise, titleFailed.promise]);
+      // Let the failed-start catch reach its drain while accepted speech remains held.
+      await setImmediate();
+      late = Promise.resolve(request.onUtterance({ text: "Speech after title failure" }));
+      void late.then(
+        () => {
+          lateSettled = true;
+        },
+        () => {
+          lateSettled = true;
+        },
+      );
+      await setImmediate();
+      expect.soft(lateSettled).toBe(true);
+      releaseFirst.resolve();
+      await first;
+      await stopAttempted.promise;
+      await setImmediate();
+      expect.soft(startupSettled).toBe(true);
+      expect.soft(lateSettled).toBe(true);
+    } finally {
+      releaseFirst.resolve();
+      releaseLate.resolve();
+      await Promise.allSettled([first, late, startup]);
+    }
+    await first;
+    await late;
+    const failure = await startup;
+    expect(failure).toBeInstanceOf(TranscriptStartError);
+    expect(failure).toMatchObject({
+      code: "admitted-start-failed",
+      retry: undefined,
+      cause: expect.objectContaining({
+        message: expect.stringContaining("provider cleanup failed"),
+      }),
+    });
+    expect.soft(stopCalls).toBe(1);
+    expect
+      .soft((await f.store.readUtterancesForSession(request.session)).map((row) => row.text))
+      .toEqual(["Accepted before title failure"]);
+    cleanupSucceeds = true;
+    await expect(
+      f.tool.execute("cleanup-retry", { action: "stop", sessionId: request.session.sessionId }),
+    ).resolves.toMatchObject({
+      details: {
+        sessionId: request.session.sessionId,
+        summary: { transcript: ["Accepted before title failure"] },
+      },
+    });
+    expect((await f.store.readSession(request.session.sessionId))?.stoppedAt).toEqual(
+      expect.any(String),
+    );
+    expect(stopCalls).toBe(2);
+  });
+
   it("drains accepted startup speech before restoring stop state and issuing retry authority", async () => {
     const f = fixture();
     const appendEntered = createDeferred();
