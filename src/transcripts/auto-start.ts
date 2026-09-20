@@ -69,12 +69,12 @@ export function createTranscriptsAutoStartService(
   return {
     start(config = ctx.config, pausedProviders?: ReadonlySet<string>) {
       if (stopped) {
-        return;
+        return { settled: Promise.resolve() };
       }
       diagnostics = beginConfiguredTranscriptStarts(config?.transcripts);
       const resolved = resolveTranscriptsConfig(config?.transcripts);
       if (!resolved.enabled) {
-        return;
+        return { settled: Promise.resolve() };
       }
       const retained = new Set(entries);
       for (const [index, entry] of resolved.autoStart.entries()) {
@@ -122,6 +122,12 @@ export function createTranscriptsAutoStartService(
           ),
         });
       }
+      // Join this batch's startup and diagnostics; scheduled retries remain background work.
+      return {
+        settled: Promise.allSettled(
+          [...entries].flatMap((entry) => Array.from(entry.pendingStarts)),
+        ).then(() => undefined),
+      };
     },
     async stop(providerIds?: ReadonlySet<string>) {
       stopped ||= providerIds === undefined;
@@ -406,7 +412,7 @@ function startTranscriptsAutoStartEntry(
     });
   };
 
-  const watchEntry = () => {
+  const watchEntry = async () => {
     let occupied = false;
     let ready = false;
     let capture: OwnedCapture | undefined;
@@ -656,10 +662,14 @@ function startTranscriptsAutoStartEntry(
       });
     };
     arm(1);
+    await watchRegistration;
+    await starting;
   };
 
   if (entry.whenOccupied) {
-    watchEntry();
+    // Join initial capture separately so stop can release the acquired watcher first.
+    const startup = watchEntry().finally(() => pendingStarts.delete(startup));
+    pendingStarts.add(startup);
   } else {
     startContinuous(1);
   }
