@@ -99,7 +99,6 @@ import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-u
 import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
-import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
 import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
 import {
@@ -401,13 +400,7 @@ export function executeSharedStateCommand(
     case "transcripts.summarySnapshot":
     case "transcripts.utterances":
     case "transcripts.summary": {
-      ensureMeetingTranscriptsSchema({
-        database,
-        path: context.databasePath,
-        env: getSqliteWorkerStateContext().environment,
-        readOnly: command.input.readOnly,
-      });
-      return executeTranscriptRead(database.db, command);
+      return executeTranscriptRead({ database, path: context.databasePath }, command);
     }
     default:
       break;
