@@ -16,6 +16,10 @@ import type { CronRunRecoveryWorkerOperations } from "../cron/store/run-recovery
 import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
 import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type {
+  RepositoryGitHubPublicationPendingQuery,
+  RepositoryGitHubPublicationStatusRow,
+} from "../gateway/github-repository-publication.kernel.js";
+import type {
   ManagedImageRecord,
   ManagedImageRecordEntry,
 } from "../gateway/managed-image-record-store.types.js";
@@ -82,11 +86,10 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TaskRegistryWorkerOperations & {
-    "skills.curator.read": {
-      input: { skillFiles: readonly string[] };
-      output: ReturnType<typeof curator.readSkillCuratorStateInDatabase>;
+    "githubRepository.personalPending": {
+      input: RepositoryGitHubPublicationPendingQuery;
+      output: RepositoryGitHubPublicationStatusRow | undefined;
     };
-    "skills.usage.record": { input: curator.PreparedSkillUsage; output: void };
     "skillUploads.commit": {
       input: Parameters<typeof commitSkillUploadInDatabase>[0];
       output: ReturnType<typeof commitSkillUploadInDatabase>;
@@ -180,6 +183,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
     };
+    "skills.curator.read": {
+      input: { skillFiles: readonly string[] };
+      output: ReturnType<typeof curator.readSkillCuratorStateInDatabase>;
+    };
+    "skills.usage.record": { input: curator.PreparedSkillUsage; output: void };
     "workshop.events.list": {
       input: Parameters<typeof listStoredSkillProposalEventsInDatabase>[1];
       output: ReturnType<typeof listStoredSkillProposalEventsInDatabase>;
