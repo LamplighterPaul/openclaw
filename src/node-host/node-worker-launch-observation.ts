@@ -110,7 +110,10 @@ async function observeNodeWorkerChildOutput(
     }
     const operation = (async () => {
       try {
-        while (stdout && !observationEnded) {
+        while (stdout) {
+          if (observationEnded) {
+            break;
+          }
           const chunk = Buffer.from(stdout, "utf8");
           stdout = "";
           for (const line of framer.push(chunk)) {
