@@ -45,8 +45,9 @@ const {
   stageQueuePayloadMedia,
 } = await import("./delivery-queue-media-spool.js");
 const { enqueueDelivery } = await import("./delivery-queue-storage.js");
-const { loadDeliveryQueueEntry, pruneExpiredDeliveryQueueTombstones, upsertDeliveryQueueEntry } =
+const { loadDeliveryQueueEntry, pruneExpiredDeliveryQueueTombstones } =
   await import("../delivery-queue-sqlite.js");
+const { seedDeliveryQueueEntry } = await import("../delivery-queue-sqlite.test-support.js");
 const {
   LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
   OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
@@ -104,7 +105,7 @@ describe("retention", () => {
       },
       stateDir,
     );
-    upsertDeliveryQueueEntry({
+    seedDeliveryQueueEntry({
       queueName: OUTBOUND_DELIVERY_QUEUE_NAME,
       entry: { id: "expired-receipt", enqueuedAt: Date.now() - 31 * DAY_MS, retryCount: 0 },
       status: "completed",
@@ -151,7 +152,7 @@ describe("retention", () => {
           retryCount: 0,
           payloads: [{ mediaUrl: artifact }],
         };
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName,
           entry,
           stateDir,
