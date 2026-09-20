@@ -218,7 +218,6 @@ export const databaseWorkerCoreTestFiles = [
   "test/loopback-ask-user-telegram-channel.test.ts",
   "test/slack-outbound-permanent-rejection-loopback.test.ts",
   "test/telegram-outbound-permanent-rejection-loopback.test.ts",
-  "test/twitch-message-tool-delivery.test.ts",
   "test/imessage-reply-alias.integration.test.ts",
   "test/matrix-channel-read-authority.integration.test.ts",
   "test/telegram-history-read.integration.test.ts",
