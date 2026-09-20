@@ -1,7 +1,9 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type {
+  PluginMetadataSnapshotCandidate,
+  ScopedPluginMetadataSnapshot,
+} from "./current-plugin-metadata-snapshot.types.js";
 import {
   currentPluginMetadataConfigIdentityCache,
   getGatewayPluginMetadataSnapshot,
@@ -19,12 +21,17 @@ import {
   getScopedPluginCache,
   runOutsidePluginCache,
   withPluginCache,
-  type PluginCache,
 } from "./plugin-cache.js";
 import {
   resolvePluginControlPlaneFingerprint,
   type ResolvePluginControlPlaneContextParams,
 } from "./plugin-control-plane-context.js";
+import {
+  createPluginExecutionFrame,
+  getPluginExecutionFrame,
+  runWithPluginExecutionFrame,
+} from "./plugin-instance-invocation.js";
+import type { PluginExecutionFrame } from "./plugin-instance-invocation.types.js";
 import { resolvePluginMetadataEnvFingerprint } from "./plugin-metadata-env.js";
 import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 import { registerPluginMetadataSnapshotReaders } from "./plugin-metadata-snapshot-readers.js";
@@ -57,24 +64,6 @@ export type CurrentPluginMetadataSnapshotParams = {
   requireAgentWorkspaceCompatibility?: boolean;
 };
 
-type PluginMetadataSnapshotCandidate = {
-  snapshot: PluginMetadataSnapshot | undefined;
-  configFingerprint: string | undefined;
-  envFingerprint?: string;
-  defaultDiscoveryCompatible?: boolean;
-  compatiblePolicyHashes?: readonly string[];
-  compatibleConfigFingerprints?: readonly string[];
-  hasConfigIdentity?: (config: OpenClawConfig) => boolean;
-  immutableRuntimeGeneration?: boolean;
-};
-
-type ScopedPluginMetadataSnapshot = PluginMetadataSnapshotCandidate & {
-  snapshot: PluginMetadataSnapshot;
-  cache: PluginCache;
-  metadata: PluginCache["metadata"];
-  parent?: ScopedPluginMetadataSnapshot;
-};
-
 export type PluginMetadataSnapshotScopeRunner = <T>(
   params: {
     config: OpenClawConfig;
@@ -82,11 +71,6 @@ export type PluginMetadataSnapshotScopeRunner = <T>(
   },
   run: () => T,
 ) => T;
-
-const SCOPED_PLUGIN_METADATA_SNAPSHOT_KEY = Symbol.for("openclaw.scopedPluginMetadataSnapshot");
-const scopedPluginMetadataSnapshot = resolveGlobalSingleton<
-  AsyncLocalStorage<ScopedPluginMetadataSnapshot>
->(SCOPED_PLUGIN_METADATA_SNAPSHOT_KEY, () => new AsyncLocalStorage());
 
 function resolvePluginMetadataControlPlaneFingerprint(
   config?: OpenClawConfig,
@@ -125,9 +109,10 @@ function prepareCurrentPluginMetadataSnapshotPublication(
     snapshot.configFingerprint === defaultDiscoveryConfigFingerprint ||
     Boolean(compatibleConfigFingerprints?.includes(defaultDiscoveryConfigFingerprint));
   const envFingerprint = resolvePluginMetadataEnvFingerprint(options.env);
-  const agentWorkspaceFingerprint = options.config
-    ? resolveAgentWorkspaceFingerprint(options.config, options.env)
-    : undefined;
+  const agentWorkspaceFingerprint =
+    owner === "gateway" && options.config
+      ? resolveAgentWorkspaceFingerprint(options.config, options.env)
+      : undefined;
   const configIdentities = [...(options.compatibleConfigs ?? [])];
   if (options.config) {
     const policyHash = resolveInstalledPluginIndexPolicyHash(options.config, options.env);
@@ -208,7 +193,7 @@ export function adoptCurrentPluginMetadataSnapshotIfAbsent(
 function revokeCurrentPluginMetadataSnapshotScopes(): void {
   const caches = new Set(getScopedPluginCaches());
   const runtimeCaches = new Set();
-  for (let scoped = scopedPluginMetadataSnapshot.getStore(); scoped; scoped = scoped.parent) {
+  for (let scoped = getPluginExecutionFrame()?.metadataScope; scoped; scoped = scoped.parent) {
     if (scoped.immutableRuntimeGeneration) {
       runtimeCaches.add(scoped.cache);
     } else {
@@ -236,6 +221,15 @@ export function withPluginMetadataSnapshotScope<T>(
   run: () => T,
   options: CurrentPluginMetadataSnapshotOptions = {},
 ): T {
+  return runWithPluginExecutionFrame(createPluginMetadataSnapshotFrame(snapshot, options), run);
+}
+
+/** Compose metadata and its cache before the runtime owner enters the async scope. */
+export function createPluginMetadataSnapshotFrame(
+  snapshot: PluginMetadataSnapshot,
+  options: CurrentPluginMetadataSnapshotOptions = {},
+): PluginExecutionFrame {
+  const current = getPluginExecutionFrame();
   const cache = getPluginMetadataSnapshotCache(snapshot);
   const workspaceDir = options.workspaceDir ?? snapshot.workspaceDir;
   const fingerprint = (config: OpenClawConfig, policyHash: string | undefined) =>
@@ -270,9 +264,11 @@ export function withPluginMetadataSnapshotScope<T>(
   for (const config of options.compatibleConfigs ?? []) {
     configIdentities.add(config);
   }
-  return withPluginCache(cache, () =>
-    scopedPluginMetadataSnapshot.run(
-      {
+  return createPluginExecutionFrame(
+    {
+      ...current,
+      cacheScope: { cache, parent: current?.cacheScope },
+      metadataScope: {
         snapshot,
         cache,
         metadata: cache.metadata,
@@ -282,15 +278,19 @@ export function withPluginMetadataSnapshotScope<T>(
         compatibleConfigFingerprints,
         hasConfigIdentity: (config) => configIdentities.has(config),
         immutableRuntimeGeneration: options.trustConfigIdentity === true,
-        parent: scopedPluginMetadataSnapshot.getStore(),
+        parent: current?.metadataScope,
       },
-      run,
-    ),
+    },
+    current,
   );
 }
 
 export function runOutsidePluginMetadataSnapshotScope<T>(run: () => T): T {
-  return scopedPluginMetadataSnapshot.exit(() => runOutsidePluginCache(run));
+  const current = getPluginExecutionFrame();
+  return runWithPluginExecutionFrame(
+    createPluginExecutionFrame({ ...current, metadataScope: undefined }, current),
+    () => runOutsidePluginCache(run),
+  );
 }
 
 const NEEDS_PREPARED_POLICY = Symbol("needs-prepared-policy");
@@ -434,7 +434,7 @@ export function isCurrentPluginMetadataSnapshotRuntimeGeneration(
   if (gatewaySnapshot && gatewaySnapshot.index === snapshot.index) {
     return true;
   }
-  for (let scoped = scopedPluginMetadataSnapshot.getStore(); scoped; scoped = scoped.parent) {
+  for (let scoped = getPluginExecutionFrame()?.metadataScope; scoped; scoped = scoped.parent) {
     if (!isScopedSnapshotInCurrentCache(scoped)) {
       continue;
     }
@@ -448,7 +448,7 @@ export function isCurrentPluginMetadataSnapshotRuntimeGeneration(
 export function getCurrentPluginMetadataSnapshot(
   params: CurrentPluginMetadataSnapshotParams = {},
 ): PluginMetadataSnapshot | undefined {
-  for (let scoped = scopedPluginMetadataSnapshot.getStore(); scoped; scoped = scoped.parent) {
+  for (let scoped = getPluginExecutionFrame()?.metadataScope; scoped; scoped = scoped.parent) {
     if (!isScopedSnapshotInCurrentCache(scoped)) {
       continue;
     }
