@@ -6,7 +6,11 @@ import {
   resolveDefaultAgentId,
 } from "../../agents/agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
+import {
+  copyReplyPayloadMetadata,
+  type ReplyPayload,
+  formatBtwTextForExternalDelivery,
+} from "../../auto-reply/reply-payload.js";
 import {
   normalizeReplyPayloadOutcome,
   type NormalizeReplyOutcome,
@@ -14,7 +18,6 @@ import {
 } from "../../auto-reply/reply/normalize-reply.js";
 import { resolvePendingFinalDeliveryCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
 import { createReplyMediaPathNormalizer } from "../../auto-reply/reply/reply-media-paths.runtime.js";
-import { formatBtwTextForExternalDelivery } from "../../auto-reply/reply/reply-payloads-base.js";
 import {
   filterMessagingToolMediaDuplicates,
   hasEnabledDeliveryOperation,

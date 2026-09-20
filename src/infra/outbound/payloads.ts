@@ -1,13 +1,13 @@
 // Outbound payload planning normalizes reply payloads into sendable text,
 // media, presentation, interactive, and mirror projections.
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
-import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
-import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import {
+  copyReplyPayloadMetadata,
   formatBtwTextForExternalDelivery,
   isRenderablePayload,
   shouldSuppressReasoningPayload,
-} from "../../auto-reply/reply/reply-payloads-base.js";
+} from "../../auto-reply/reply-payload.js";
+import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import { stripLeadingInboundMetadata } from "../../auto-reply/reply/strip-inbound-meta.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { formatLocationText } from "../../channels/location.js";

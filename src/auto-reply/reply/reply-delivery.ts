@@ -5,6 +5,7 @@ import {
   copyReplyPayloadMetadata,
   isReplyPayloadTerminalContent,
   setReplyPayloadMetadata,
+  isRenderablePayload,
 } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { BlockReplyContext, ReplyPayload, ReplyThreadingPolicy } from "../types.js";
@@ -12,7 +13,7 @@ import { deliverBlockReply } from "./block-reply-delivery.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
 import { parseReplyDirectives } from "./reply-directives.js";
 import { resolveReplyDispatchErrorOutcome } from "./reply-dispatch-outcome.js";
-import { applyReplyTagsToPayload, isRenderablePayload } from "./reply-payloads.js";
+import { applyReplyTagsToPayload } from "./reply-payloads.js";
 import type { TypingSignaler } from "./typing-mode.js";
 
 type ReplyDirectiveParseMode = "always" | "auto" | "never";
