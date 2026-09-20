@@ -4,6 +4,32 @@ import { normalizeTestText } from "../../../test/helpers/normalize-text.js";
 import { ChatLog } from "./chat-log.js";
 
 describe("ChatLog", () => {
+  it("marks separate assistant messages without marking paragraphs or streaming updates", () => {
+    const chatLog = new ChatLog(40);
+    chatLog.reserveAssistantSlot("run-1");
+    expect(normalizeTestText(chatLog.render(80).join("\n"))).not.toContain("●");
+
+    chatLog.updateAssistant("Checking the files.", "run-1");
+    chatLog.updateAssistant("Checking the files.\n\nStill checking.", "run-1");
+    expect(normalizeTestText(chatLog.render(80).join("\n")).match(/●/g)).toHaveLength(1);
+
+    chatLog.startTool("tool-1", "read_file", { path: "example.txt" });
+    const final =
+      "Checking the files.\n\nStill checking.\n\nThe files are ready.\n\nNo changes are needed.";
+    chatLog.updateAssistant(final, "run-1");
+    chatLog.finalizeAssistant(final, "run-1");
+    const rendered = normalizeTestText(chatLog.render(80).join("\n"));
+    expect(rendered.match(/●/g)).toHaveLength(2);
+    expect(rendered).toMatch(/●\nChecking the files/);
+    expect(rendered).toMatch(/●\nThe files are ready/);
+    expect(rendered).not.toMatch(/●\n(?:Still checking|No changes)/);
+
+    chatLog.clearAll();
+    chatLog.finalizeAssistant("Checking the files.\n\nStill checking.");
+    chatLog.finalizeAssistant("The files are ready.\n\nNo changes are needed.");
+    expect(normalizeTestText(chatLog.render(80).join("\n")).match(/●/g)).toHaveLength(2);
+  });
+
   it("caps component growth to avoid unbounded render trees", () => {
     const chatLog = new ChatLog(20);
     for (let i = 1; i <= 40; i++) {
