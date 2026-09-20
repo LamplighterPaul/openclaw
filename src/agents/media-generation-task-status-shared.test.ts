@@ -283,7 +283,9 @@ describe("media generation delivery-phase prompt guard", () => {
           : videoTaskStatusOwner.findDuplicateGuardTaskForSession("global", { agentId: "ops" });
       await started.promise;
       records =
-        change === "deleted" ? [] : records.map((task) => ({ ...task, status: "succeeded" }));
+        change === "deleted"
+          ? []
+          : records.map((task) => Object.assign({}, task, { status: "succeeded" as const }));
       if (completion === "resolves") {
         config.resolve(capturedConfig);
       } else {
