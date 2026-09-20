@@ -32,11 +32,13 @@ export class DraftCloudMachineState {
 
   selection(profileId: string, profiles: readonly DraftCloudProfile[]) {
     const profile = profiles.find((candidate) => candidate.id === profileId);
-    const os = profile ? this.selectedOs(profile) : this.resolveOs(profileId);
+    const os = this.resolveOs(profileId) || (profile && defaultCloudOs(profile)) || "";
     // Submit the choice shown by the picker, not a potentially different backend default.
-    const machineClass =
-      this.resolve(profileId) || (profile && defaultCloudMachine(profile, os)?.id) || "";
-    return { machineClass, os } as const;
+    return {
+      machineClass:
+        this.resolve(profileId) || (profile && defaultCloudMachine(profile, os)?.id) || "",
+      os,
+    } as const;
   }
 
   selectedOs(profile: DraftCloudProfile): string {
