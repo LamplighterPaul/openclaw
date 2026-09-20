@@ -97,8 +97,13 @@ and 320 dp of height. Onboarding and layouts without a supported split use the
 largest rectangular region clear of separating folds and fully occluding hinges.
 Equal regions prefer the top, then the reading-direction start side. Opening
 the keyboard does not select a different fallback region for this outer host.
-Without an intersecting separator, the app keeps its full-window layout and
-modal sidebar.
+Flat, unobstructed windows at least 600 dp wide and 320 dp tall show the sidebar
+beside the active page. The sidebar is 280 dp wide on unfolded-phone-sized
+windows and 320 dp at widths of 840 dp or more. Use Hide Sidebar to collapse it
+and Show Sidebar to reopen it. Compact windows use the modal drawer. Resizing
+retains the active page, draft, sidebar search, and scroll owners; an explicit
+collapse remains in effect when returning to a wide window. Separating book
+hinges retain their dedicated panes and do not offer a collapse across the hinge.
 
 In Chat, a full-width horizontal separator can place the conversation header,
 transcript, and status above the hinge and the same composer below it. Each

@@ -183,6 +183,7 @@ class SidebarNavigationAccessibilityTest {
             connection = GatewayConnectionDisplay(false, "Offline", null),
             visible = true,
             showCloseButton = false,
+            permanentSidebar = true,
             onClose = {},
             onDragActiveChange = {},
             onNewSession = {},
