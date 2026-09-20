@@ -122,6 +122,7 @@ export function createStreamRendering({
   const replyDirectiveAccumulator = createStreamingDirectiveAccumulator();
   const partialReplyDirectiveAccumulator = createStreamingDirectiveAccumulator();
   let reasoningProjection = createTextProjection([trimTextFilter("both")]);
+  const coveredBlockSourceRanges = new Map<number, Array<readonly [number, number]>>();
   // Retain the producer snapshot for eligibility; the projection builds its own
   // source, and comparing a reconstructed growing prefix can restore prefix work.
   let reasoningRaw: string | undefined;
@@ -373,6 +374,8 @@ export function createStreamRendering({
     text: string,
     options?: {
       sourceText?: string;
+      sourceStart?: number;
+      sourceEnd?: number;
       assistantMessageIndex?: number;
       final?: boolean;
       completeMarkdownChunk?: boolean;
@@ -461,12 +464,34 @@ export function createStreamRendering({
       return;
     }
 
-    // Chunker source metadata identifies a distinct source occurrence even when
-    // adjacent rendered chunks happen to have identical text.
+    let sourceRangeAlreadyCovered = false;
+    const blockSourceRange =
+      options?.sourceText !== undefined &&
+      options.sourceStart !== undefined &&
+      options.sourceEnd !== undefined
+        ? ([options.sourceStart, options.sourceEnd] as const)
+        : undefined;
+    if (blockSourceRange) {
+      const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
+      const covered = coveredBlockSourceRanges.get(index) ?? [];
+      const [start, end] = blockSourceRange;
+      let coveredUntil = start;
+      for (const [coveredStart, coveredEnd] of covered.toSorted((a, b) => a[0] - b[0])) {
+        if (coveredStart > coveredUntil) {
+          break;
+        }
+        coveredUntil = Math.max(coveredUntil, coveredEnd);
+      }
+      if (coveredUntil >= end) {
+        sourceRangeAlreadyCovered = true;
+      }
+    }
+    // Source ranges distinguish adjacent identical chunks without treating a
+    // replayed terminal snapshot as a new occurrence.
     if (
       chunk &&
-      options?.sourceText === undefined &&
-      shouldSkipAssistantText(chunk, normalizedChunk)
+      (sourceRangeAlreadyCovered ||
+        (blockSourceRange === undefined && shouldSkipAssistantText(chunk, normalizedChunk)))
     ) {
       if (slicedPrefixReplay) {
         markBlockReplyTextHandled();
@@ -535,6 +560,10 @@ export function createStreamRendering({
       return;
     }
     pushAssistantText(chunk, normalizedChunk);
+    const emittedBlockSourceRange =
+      chunk === text.trimEnd() && cleanedText === chunk && !sourceRangeAlreadyCovered
+        ? blockSourceRange
+        : undefined;
     emitBlockReply(
       {
         text: cleanedText,
@@ -547,11 +576,22 @@ export function createStreamRendering({
       {
         assistantMessageIndex: options?.assistantMessageIndex ?? state.assistantMessageIndex,
         blockSourceText:
-          chunk === text.trimEnd() && cleanedText === chunk ? options?.sourceText : undefined,
+          chunk === text.trimEnd() &&
+          cleanedText === chunk &&
+          (options?.sourceStart === undefined || emittedBlockSourceRange !== undefined)
+            ? options?.sourceText
+            : undefined,
+        blockSourceRange: emittedBlockSourceRange,
         consumePendingToolMedia:
           options?.finalReply !== undefined || Boolean(mediaUrls?.length || audioAsVoice),
       },
     );
+    if (blockSourceRange && !sourceRangeAlreadyCovered) {
+      const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
+      const covered = coveredBlockSourceRanges.get(index) ?? [];
+      covered.push(blockSourceRange);
+      coveredBlockSourceRanges.set(index, covered);
+    }
     markBlockReplyTextHandled();
   };
 
@@ -570,7 +610,13 @@ export function createStreamRendering({
       return undefined;
     }
     let pendingChunk:
-      | { text: string; sourceText?: string; startsAtLineStart?: boolean }
+      | {
+          text: string;
+          sourceText?: string;
+          sourceStart?: number;
+          sourceEnd?: number;
+          startsAtLineStart?: boolean;
+        }
       | undefined;
     if (blockChunker.hasBuffered()) {
       blockChunker.drain({
@@ -579,6 +625,8 @@ export function createStreamRendering({
           if (pendingChunk !== undefined) {
             emitBlockChunk(pendingChunk.text, {
               sourceText: pendingChunk.sourceText,
+              sourceStart: pendingChunk.sourceStart,
+              sourceEnd: pendingChunk.sourceEnd,
               startsAtLineStart: pendingChunk.startsAtLineStart,
               assistantMessageIndex: options?.assistantMessageIndex,
               completeMarkdownChunk: true,
@@ -594,6 +642,8 @@ export function createStreamRendering({
       emitBlockChunk(pendingChunk?.text ?? "", {
         ...options,
         sourceText: pendingChunk?.sourceText,
+        sourceStart: pendingChunk?.sourceStart,
+        sourceEnd: pendingChunk?.sourceEnd,
         startsAtLineStart: pendingChunk?.startsAtLineStart,
         completeMarkdownChunk: options?.final === true,
       });

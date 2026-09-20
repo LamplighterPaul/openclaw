@@ -203,7 +203,15 @@ export class EmbeddedBlockChunker {
   /** Emit safe chunks according to size and Markdown fence constraints. */
   drain(params: {
     force: boolean;
-    emit: (chunk: string, options?: { sourceText: string; startsAtLineStart: boolean }) => void;
+    emit: (
+      chunk: string,
+      options?: {
+        sourceText: string;
+        sourceStart: number;
+        sourceEnd: number;
+        startsAtLineStart: boolean;
+      },
+    ) => void;
   }) {
     // KNOWN: We cannot split inside fenced code blocks (Markdown breaks + UI glitches).
     // When forced (maxChars), we close + reopen the fence to keep Markdown valid.
@@ -223,7 +231,12 @@ export class EmbeddedBlockChunker {
 
     if (!chunking || (force && source.length <= maxChars && !this.#reopenPrefix)) {
       if (!chunking || source.trim().length > 0) {
-        emit(source, { sourceText: this.#buffer, startsAtLineStart });
+        emit(source, {
+          sourceText: this.#buffer,
+          sourceStart: this.#consumedLength,
+          sourceEnd: this.#consumedLength + this.#buffer.length,
+          startsAtLineStart,
+        });
       }
       this.#bufferStartsAtLineStart = this.#buffer.endsWith("\n");
       this.#consumedLength += this.#buffer.length;
@@ -276,6 +289,8 @@ export class EmbeddedBlockChunker {
     const emitSourceChunk = (chunk: string, from: number, to: number) =>
       emit(chunk, {
         sourceText: this.#buffer.slice(sourceOffset(from), sourceOffset(to)),
+        sourceStart: this.#consumedLength + sourceOffset(from),
+        sourceEnd: this.#consumedLength + sourceOffset(to),
         startsAtLineStart:
           Boolean(reopenFence) ||
           (from === 0 ? startsAtLineStart : source.charAt(from - 1) === "\n"),

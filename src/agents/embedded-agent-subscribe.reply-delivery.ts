@@ -336,6 +336,7 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
       assistantMessageIndex?: number;
       consumePendingToolMedia?: boolean;
       blockSourceText?: string;
+      blockSourceRange?: readonly [start: number, end: number];
     },
   ) => {
     flushAssistantStream();
@@ -383,7 +384,10 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
           })
         : blockPayload;
     if (blockPayload.text && options?.blockSourceText !== undefined) {
-      setReplyPayloadMetadata(taggedPayload, { blockSourceText: options.blockSourceText });
+      setReplyPayloadMetadata(taggedPayload, {
+        blockSourceText: options.blockSourceText,
+        blockSourceRange: options.blockSourceRange,
+      });
     }
     if (state.deferBlockReplyDelivery) {
       if (pendingToolMedia) {
