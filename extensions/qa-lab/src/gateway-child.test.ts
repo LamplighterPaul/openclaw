@@ -764,7 +764,7 @@ describe("buildQaRuntimeEnv", () => {
     expect(developmentEnv.NODE_ENV).toBe("development");
   });
 
-  it.each(["parent", "runtime patch"])(
+  it.each(["default", "parent", "runtime patch"])(
     "keeps %s supervision out of QA-owned children",
     (source) => {
       const supervisorEnv = {
@@ -782,8 +782,13 @@ describe("buildQaRuntimeEnv", () => {
         OPENCLAW_SERVICE_KIND: "gateway",
       };
       const env = buildQaRuntimeEnv({
-        ...createParams(source === "parent" ? supervisorEnv : {}),
-        runtimeEnvPatch: source === "runtime patch" ? supervisorEnv : undefined,
+        ...createParams(
+          source === "parent" ? { ...supervisorEnv, OPENCLAW_PROFILE: "operator" } : {},
+        ),
+        runtimeEnvPatch:
+          source === "runtime patch"
+            ? { ...supervisorEnv, OPENCLAW_PROFILE: "operator" }
+            : undefined,
       });
 
       for (const key of Object.keys(supervisorEnv)) {
@@ -791,6 +796,15 @@ describe("buildQaRuntimeEnv", () => {
       }
       expect(env.OPENCLAW_NO_RESPAWN).toBe("1");
       expect(env.OPENCLAW_QA_PARENT_PID).toBe(String(process.pid));
+      expect(env.OPENCLAW_PROFILE).toMatch(/^[a-z0-9][a-z0-9_-]{0,63}$/u);
+      expect(env.OPENCLAW_PROFILE).not.toBe("operator");
+      expect(env.OPENCLAW_PROFILE).not.toBe("default");
+      expect(env.OPENCLAW_PROFILE).toBe(buildQaRuntimeEnv(createParams({})).OPENCLAW_PROFILE);
+      expect(env.OPENCLAW_PROFILE).not.toBe(
+        buildQaRuntimeEnv({ ...createParams({}), tempRoot: "/tmp/another-qa" }).OPENCLAW_PROFILE,
+      );
+      expect(env.OPENCLAW_STATE_DIR).toBe(createParams({}).stateDir);
+      expect(env.OPENCLAW_CONFIG_PATH).toBe(createParams({}).configPath);
     },
   );
 
